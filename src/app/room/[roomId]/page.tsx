@@ -4,11 +4,13 @@ import RoomPage from '@/components/RoomPage';
 import { Music } from 'lucide-react';
 import Link from 'next/link';
 import * as React from 'react';
-import { useParams } from 'next/navigation';
 
-export default function Room() {
-  const params = useParams();
-  const roomId = Array.isArray(params.roomId) ? params.roomId[0] : params.roomId;
+type Props = {
+  params: { roomId: string };
+};
+
+export default function Room({ params }: Props) {
+  const { roomId } = React.use(params);
 
   if (!roomId) {
     // Optionally, render a loading state or redirect
