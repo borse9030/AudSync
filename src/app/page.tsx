@@ -36,7 +36,7 @@ export default function Home() {
 
   useEffect(() => {
     const auth = getAuth(app);
-    onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setUid(user.uid);
         setIsLoading(false);
@@ -52,6 +52,7 @@ export default function Home() {
         });
       }
     });
+    return () => unsubscribe();
   }, [toast]);
 
   const handleCreateRoom = async () => {
@@ -95,6 +96,14 @@ export default function Home() {
 
   const handleJoinRoom = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!uid) {
+      toast({
+        variant: 'destructive',
+        title: 'Not Authenticated',
+        description: 'Please wait for authentication to complete.',
+      });
+      return;
+    }
     if (!roomCode) {
       toast({
         title: 'Invalid Code',
@@ -157,7 +166,7 @@ export default function Home() {
             size="lg"
             className="w-full font-bold"
             onClick={handleCreateRoom}
-            disabled={isCreating || isJoining}
+            disabled={isCreating || isJoining || isLoading}
           >
             {isCreating ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -178,12 +187,13 @@ export default function Home() {
               onChange={(e) => setRoomCode(e.target.value)}
               className="text-center text-lg"
               maxLength={6}
+              disabled={isLoading}
             />
             <Button
               variant="secondary"
               type="submit"
               className="w-full"
-              disabled={isCreating || isJoining}
+              disabled={isCreating || isJoining || isLoading}
             >
               {isJoining ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
