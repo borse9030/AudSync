@@ -92,8 +92,10 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   }, [volume]);
 
   useEffect(() => {
+    if (typeof window !== 'undefined') {
       const nameFromStorage = localStorage.getItem('audsync_device_name') || `Device ${Math.random().toString(36).substring(2, 6)}`;
       setDeviceName(nameFromStorage);
+    }
   }, []);
 
   useEffect(() => {
@@ -138,8 +140,8 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
 
   // Playback sync logic
   useEffect(() => {
-    if (!room?.playback || !audioReady) return;
-    const { state, position, youtubeVideoId } = room.playback;
+    if (!room?.playback || !audioReady || seekingRef.current) return;
+    const { state, position } = room.playback;
 
     const ytPlayer = youtubePlayerRef.current;
     if (!ytPlayer || !('getPlayerState' in ytPlayer)) return;
@@ -147,8 +149,10 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     const estimatedServerTime = Date.now();
     const playbackStartedAt = (room.playback.timestamp as any)?.toMillis() || Date.now();
     const expectedPosition = position + (state === 'playing' ? (estimatedServerTime - playbackStartedAt) / 1000 : 0);
+    
+    const clientPosition = ytPlayer.getCurrentTime();
 
-    if (Math.abs(ytPlayer.getCurrentTime() - expectedPosition) > 1.5) {
+    if (Math.abs(clientPosition - expectedPosition) > 1.5) {
       ytPlayer.seekTo(expectedPosition, true);
     }
 
@@ -193,12 +197,14 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
       "playback.timestamp": serverTimestamp(),
     });
 
-    setTimeout(() => { seekingRef.current = false }, 200);
+    setTimeout(() => { seekingRef.current = false }, 500);
   }
   
   const handleDeviceNameChange = (newName: string) => {
     setDeviceName(newName);
-    localStorage.setItem('audsync_device_name', newName);
+    if(typeof window !== 'undefined') {
+        localStorage.setItem('audsync_device_name', newName);
+    }
     if(user && firestore) {
         const deviceRef = doc(firestore, `rooms/${roomId}/devices/${user.uid}`);
         updateDocumentNonBlocking(deviceRef, { name: newName });
@@ -270,18 +276,16 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
       
       <div className="grid md:grid-cols-[1fr_300px] h-full">
         <div className="flex flex-col items-center justify-center p-8 bg-muted/20 relative">
-          <div className={cn("w-full h-full", room.playback.youtubeVideoId ? 'opacity-100' : 'opacity-0')}>
+          <div className="absolute w-0 h-0 opacity-0">
             <YouTube
               videoId={room.playback.youtubeVideoId}
               onReady={(e) => { youtubePlayerRef.current = e.target; e.target.setVolume(volume * 100); }}
-              className="absolute inset-0 w-full h-full"
-              iframeClassName="w-full h-full"
               opts={{ playerVars: { controls: 0, modestbranding: 1, showinfo: 0, rel: 0 } }}
             />
           </div>
 
           <div className="relative z-10 text-center bg-background/50 backdrop-blur-sm p-4 rounded-lg">
-            <h2 className="text-3xl font-bold">{room.playback.youtubeVideoId ? 'YouTube Video' : 'No Video Loaded'}</h2>
+            <h2 className="text-3xl font-bold">{room.playback.youtubeVideoId ? 'Now Playing' : 'No Video Loaded'}</h2>
             <p className="text-lg text-muted-foreground">{room.playback.youtubeVideoId || 'Paste a link to start'}</p>
             
             <div className="mt-8 w-full max-w-md">
