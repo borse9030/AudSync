@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useEffect, useRef } from 'react';
@@ -22,6 +23,7 @@ import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
 import { Loader2, ListMusic, Crown, Upload, Volume2, Youtube } from 'lucide-react';
 import { setDocumentNonBlocking, updateDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
+import { cn } from "@/lib/utils";
 
 const MOCK_TRACK: Track = {
   id: 'mock-track-1',
@@ -507,3 +509,5 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     </>
   );
 }
+
+    
