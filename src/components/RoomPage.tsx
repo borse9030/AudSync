@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import YouTube from 'react-youtube';
 import type { YouTubePlayer } from 'react-youtube';
 import { useUser, useFirestore, useDoc, useMemoFirebase } from '@/firebase';
-import { doc, onSnapshot, serverTimestamp, collection, writeBatch, deleteDoc } from 'firebase/firestore';
+import { doc, onSnapshot, serverTimestamp, collection, writeBatch } from 'firebase/firestore';
 import type { Room, Device } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
@@ -157,8 +157,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
               const lastSeenTime = (device.lastSeen as any)?.toMillis();
               if (lastSeenTime < staleThreshold) {
                   const deviceRef = doc(firestore, `rooms/${roomId}/devices/${device.uid}`);
-                  // Use a direct, blocking delete here as it's a background task
-                  deleteDoc(deviceRef).catch(err => console.error("Failed to cleanup device:", err));
+                  deleteDocumentNonBlocking(deviceRef);
               }
           });
       }, 20000); // Check every 20 seconds
@@ -191,15 +190,8 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
 
 
   useEffect(() => {
-    if (!room?.playback || !audioReady || seekingRef.current) return;
+    if (!room?.playback || !audioReady || seekingRef.current || isHost) return;
     
-    if (isHost) {
-      if (localPlaybackState !== room.playback.state) {
-        setLocalPlaybackState(room.playback.state);
-      }
-      return;
-    }
-
     const { state, position, youtubeVideoId, timestamp } = room.playback;
     const ytPlayer = youtubePlayerRef.current;
     if (!ytPlayer || typeof ytPlayer.getPlayerState !== 'function') return;
@@ -245,13 +237,13 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     
     const roomDocRef = doc(firestore, 'rooms', roomId);
     const newState = localPlaybackState === 'paused' ? 'playing' : 'paused';
-    setLocalPlaybackState(newState);
-
+    
     const ytPlayer = youtubePlayerRef.current;
     if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
     
     const currentPosition = ytPlayer.getCurrentTime();
     localPositionRef.current = currentPosition;
+    setLocalPlaybackState(newState);
 
     if (newState === 'playing') {
       ytPlayer.playVideo();
@@ -439,8 +431,12 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
                 onStateChange={(e) => {
                   if(isHost) {
                     const playerState = e.target.getPlayerState();
-                    if(playerState === 1 && localPlaybackState !== 'playing') setLocalPlaybackState('playing');
-                    if((playerState === 2 || playerState === 0) && localPlaybackState !== 'paused') setLocalPlaybackState('paused');
+                    // Sync host's local state ONLY if it's different
+                    if (playerState === 1 && localPlaybackState !== 'playing') {
+                      handlePlayPause();
+                    } else if ((playerState === 2 || playerState === 0) && localPlaybackState !== 'paused') {
+                      handlePlayPause();
+                    }
                   }
                 }}
                 opts={{ playerVars: { controls: 0, modestbranding: 1, showinfo: 0, rel: 0, iv_load_policy: 3 } }}
