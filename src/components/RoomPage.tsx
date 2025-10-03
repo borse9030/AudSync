@@ -1,9 +1,8 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { useAuth, useUser } from '@/firebase';
-import { getDatabase, ref, onValue, onDisconnect, set, serverTimestamp, goOffline, goOnline } from 'firebase/database';
-import { getFirebase } from '@/lib/firebase';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useUser, useFirestore, useDoc } from '@/firebase';
+import { doc, setDoc, updateDoc, onSnapshot, serverTimestamp, collection, deleteDoc } from 'firebase/firestore';
 import type { Room, Device, PlaybackState, Track } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
@@ -18,9 +17,8 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Loader2, Music, Users, ListMusic, Crown } from 'lucide-react';
-import { User } from 'firebase/auth';
+import { setDocumentNonBlocking, updateDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 
-// A mock audio file. In a real app, this would come from user uploads.
 const MOCK_TRACK: Track = {
   id: 'mock-track-1',
   title: 'Ambient Gold',
@@ -30,216 +28,187 @@ const MOCK_TRACK: Track = {
 };
 
 
-export default function RoomPage({ roomId, initialRoomData }: { roomId: string; initialRoomData: Room | null }) {
-  const [room, setRoom] = useState<Room | null>(initialRoomData);
-  const { user: currentUser, isUserLoading } = useUser();
+export default function RoomPage({ roomId }: { roomId: string; }) {
+  const firestore = useFirestore();
+  const { user, isUserLoading } = useUser();
+  const router = useRouter();
+  const { toast } = useToast();
+
+  const roomRef = useMemo(() => firestore ? doc(firestore, 'rooms', roomId) : null, [firestore, roomId]);
+  const { data: room, isLoading: isRoomLoading, error: roomError } = useDoc<Room>(roomRef);
+
   const [isHost, setIsHost] = useState(false);
   const [serverOffset, setServerOffset] = useState(0);
   const [audioReady, setAudioReady] = useState(false);
   const [deviceName, setDeviceName] = useState('');
+  const [devices, setDevices] = useState<Record<string, Device>>({});
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const driftCorrectionTimer = useRef<NodeJS.Timeout | null>(null);
-  const syncInterval = useRef<NodeJS.Timeout | null>(null);
-
-  const { toast } = useToast();
-  const router = useRouter();
 
   const getServerNow = useCallback(() => Date.now() + serverOffset, [serverOffset]);
 
-  // Auth and Initial Connection
   useEffect(() => {
-    const { db } = getFirebase();
-
-    if (!isUserLoading && currentUser) {
-        goOnline(db);
-
-        const offsetRef = ref(db, '.info/serverTimeOffset');
-        onValue(offsetRef, snap => setServerOffset(snap.val() || 0));
-
-        const deviceNameFromStorage = localStorage.getItem('audsync_device_name') || `Device ${Math.random().toString(36).substring(2, 6)}`;
-        setDeviceName(deviceNameFromStorage);
-        
-        const presenceRef = ref(db, `rooms/${roomId}/devices/${currentUser.uid}`);
-        onDisconnect(presenceRef).remove();
-    } else if (!isUserLoading && !currentUser) {
-        router.push('/');
+    if (!isUserLoading && !user) {
+      router.push('/');
     }
-    
-    return () => {
-        goOffline(db);
-    };
-  }, [roomId, router, currentUser, isUserLoading]);
+  }, [user, isUserLoading, router]);
 
-  // Room data listener
   useEffect(() => {
-    if (!currentUser) return;
+    if (roomError) {
+      toast({
+        variant: 'destructive',
+        title: 'Room Error',
+        description: 'Could not load room data. It might not exist.',
+      });
+      router.push('/');
+    }
+  }, [roomError, router, toast]);
 
-    const { db } = getFirebase();
-    const roomRef = ref(db, `rooms/${roomId}`);
+  useEffect(() => {
+    if (user && room) {
+      setIsHost(room.hostId === user.uid);
+    }
+  }, [user, room]);
 
-    const roomUnsubscribe = onValue(roomRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const roomData = snapshot.val() as Room;
-        setRoom(roomData);
-        setIsHost(roomData.hostId === currentUser.uid);
+  useEffect(() => {
+    const deviceNameFromStorage = localStorage.getItem('audsync_device_name') || `Device ${Math.random().toString(36).substring(2, 6)}`;
+    setDeviceName(deviceNameFromStorage);
+  }, []);
 
-        // Set initial device presence
-        const presenceRef = ref(db, `rooms/${roomId}/devices/${currentUser.uid}`);
-        set(presenceRef, {
-            uid: currentUser.uid,
-            name: deviceName,
-            lastSeen: serverTimestamp(),
-            isHost: roomData.hostId === currentUser.uid,
-        });
+  useEffect(() => {
+    if (!user || !firestore || !deviceName || !room) return;
 
-      } else {
-        toast({
-          variant: 'destructive',
-          title: 'Room disconnected',
-          description: 'This room no longer exists.',
-        });
-        router.push('/');
-      }
+    const deviceRef = doc(firestore, `rooms/${roomId}/devices/${user.uid}`);
+    
+    setDocumentNonBlocking(deviceRef, {
+      uid: user.uid,
+      name: deviceName,
+      lastSeen: serverTimestamp(),
+      isHost: room.hostId === user.uid,
+    }, { merge: true });
+
+    const handleBeforeUnload = () => {
+      deleteDocumentNonBlocking(deviceRef);
+    };
+    
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      deleteDocumentNonBlocking(deviceRef);
+    };
+
+  }, [user, firestore, roomId, deviceName, room]);
+
+
+  useEffect(() => {
+    if(!firestore) return;
+    const devicesColRef = collection(firestore, `rooms/${roomId}/devices`);
+    const unsubscribe = onSnapshot(devicesColRef, (snapshot) => {
+      const newDevices: Record<string, Device> = {};
+      snapshot.forEach((doc) => {
+        newDevices[doc.id] = doc.data() as Device;
+      });
+      setDevices(newDevices);
     });
+    return () => unsubscribe();
+  }, [firestore, roomId]);
 
-    return () => roomUnsubscribe();
-  }, [currentUser, deviceName, roomId, router, toast]);
 
   // Playback sync logic
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !room?.playback) return;
 
-    const { state, position, trackId, startTimeMs } = room.playback;
+    const { state, position, trackId } = room.playback;
+    const currentTrack = trackId && room.playlist ? room.playlist[trackId] : null;
 
-    if (state === 'playing') {
-      if (audio.src.includes(trackId || '')) {
-         if (startTimeMs) {
-            const timeUntilStart = startTimeMs - getServerNow();
-            if (timeUntilStart > 50) { // Schedule playback
-                audio.currentTime = position;
-                if(audio.paused) {
-                    setTimeout(() => audio.play().catch(e => console.warn("Autoplay failed", e)), timeUntilStart);
-                }
-            } else { // Correct position for late joiners
-                const expectedPosition = position + (getServerNow() - startTimeMs) / 1000;
-                audio.currentTime = expectedPosition;
-                if (audio.paused) audio.play().catch(e => console.warn("Autoplay failed", e));
-            }
-         }
-      } else if(trackId) {
-        const currentTrack = room.playlist[trackId];
-        if (currentTrack) {
-          audio.src = currentTrack.storagePath;
-          audio.load();
-          audio.addEventListener('canplay', () => {
-             // Re-run this effect once canplay is fired
-          }, { once: true });
+    if (state === 'playing' && currentTrack) {
+        if (!audio.src.endsWith(currentTrack.storagePath)) {
+            audio.src = currentTrack.storagePath;
+            audio.load();
         }
-      }
+
+        const estimatedServerTime = getServerNow();
+        const playbackStartedAt = (room.playback.timestamp as any)?.toMillis() || Date.now();
+        const expectedPosition = position + (estimatedServerTime - playbackStartedAt) / 1000;
+        
+        if (Math.abs(audio.currentTime - expectedPosition) > 1.5) { // 1.5s threshold for correction
+            audio.currentTime = expectedPosition;
+        }
+
+        if (audio.paused) {
+            audio.play().catch(e => console.warn("Autoplay failed", e));
+        }
+
     } else { // paused
       if (!audio.paused) {
         audio.pause();
       }
-      if (Math.abs(audio.currentTime - position) > 0.5) {
+       if (Math.abs(audio.currentTime - position) > 0.5) {
         audio.currentTime = position;
       }
     }
-  }, [room?.playback, audioReady, getServerNow]);
-  
-  // Drift correction logic
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (driftCorrectionTimer.current) clearTimeout(driftCorrectionTimer.current);
-    if (!audio || !isHost) return;
-
-    if (room?.playback.state === 'playing') {
-        syncInterval.current = setInterval(() => {
-            const { db } = getFirebase();
-            const playbackRef = ref(db, `rooms/${roomId}/playback`);
-            set(playbackRef, {
-                ...room.playback,
-                position: audio.currentTime,
-                timestamp: serverTimestamp(),
-            });
-        }, 3000);
-    }
-
-    return () => {
-        if(syncInterval.current) clearInterval(syncInterval.current);
-    }
-
-  }, [isHost, room, roomId]);
+  }, [room?.playback, audioReady, getServerNow, room?.playlist]);
 
 
   const handlePlayPause = () => {
-    if (!isHost || !room || !currentUser) return;
+    if (!isHost || !room || !user || !firestore) return;
     const audio = audioRef.current;
     if (!audio) return;
-
-    const { db } = getFirebase();
-    const playbackRef = ref(db, `rooms/${roomId}/playback`);
+    
+    const roomDocRef = doc(firestore, 'rooms', roomId);
 
     let newTrackId = room.playback.trackId;
     if (!newTrackId && Object.keys(room.playlist || {}).length > 0) {
       newTrackId = Object.keys(room.playlist)[0];
     } else if (!newTrackId) {
       // Add mock track if playlist is empty
-      const playlistRef = ref(db, `rooms/${roomId}/playlist/${MOCK_TRACK.id}`);
-      set(playlistRef, MOCK_TRACK);
+      const updatedPlaylist = { ...room.playlist, [MOCK_TRACK.id]: MOCK_TRACK };
       newTrackId = MOCK_TRACK.id;
+      updateDocumentNonBlocking(roomDocRef, { playlist: updatedPlaylist });
     }
 
-
     if (room.playback.state === 'paused') {
-      set(playbackRef, {
-        state: 'playing',
-        trackId: newTrackId,
-        position: audio.currentTime,
-        timestamp: serverTimestamp(),
-        startTimeMs: getServerNow() + 1000, // Schedule 1s in the future
-        startedBy: currentUser.uid,
+      updateDocumentNonBlocking(roomDocRef, {
+        "playback.state": 'playing',
+        "playback.trackId": newTrackId,
+        "playback.position": audio.currentTime,
+        "playback.timestamp": serverTimestamp(),
       });
     } else {
-      set(playbackRef, {
-        ...room.playback,
-        state: 'paused',
-        position: audio.currentTime,
-        timestamp: serverTimestamp(),
+      updateDocumentNonBlocking(roomDocRef, {
+        "playback.state": 'paused',
+        "playback.position": audio.currentTime,
+        "playback.timestamp": serverTimestamp(),
       });
     }
   };
 
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!isHost || !room || !audioRef.current) return;
+    if (!isHost || !room || !audioRef.current || !firestore) return;
     const newPosition = parseFloat(e.target.value);
     audioRef.current.currentTime = newPosition;
     
-    const { db } = getFirebase();
-    const playbackRef = ref(db, `rooms/${roomId}/playback`);
-
-    set(playbackRef, {
-        ...room.playback,
-        position: newPosition,
-        timestamp: serverTimestamp(),
-        startTimeMs: room.playback.state === 'playing' ? getServerNow() + 200 : undefined
+    const roomDocRef = doc(firestore, 'rooms', roomId);
+    updateDocumentNonBlocking(roomDocRef, {
+      "playback.position": newPosition,
+      "playback.timestamp": serverTimestamp(),
     });
   }
 
   const handleDeviceNameChange = (newName: string) => {
     setDeviceName(newName);
     localStorage.setItem('audsync_device_name', newName);
-    if(currentUser) {
-        const { db } = getFirebase();
-        const deviceRef = ref(db, `rooms/${roomId}/devices/${currentUser.uid}/name`);
-        set(deviceRef, newName);
+    if(user && firestore) {
+        const deviceRef = doc(firestore, `rooms/${roomId}/devices/${user.uid}`);
+        updateDocumentNonBlocking(deviceRef, { name: newName });
     }
   };
 
 
-  if (isUserLoading || !room || !currentUser) {
+  if (isUserLoading || isRoomLoading || !room || !user) {
     return (
       <div className="flex h-full items-center justify-center">
         <Loader2 className="h-10 w-10 animate-spin text-primary" />
@@ -251,7 +220,7 @@ export default function RoomPage({ roomId, initialRoomData }: { roomId: string; 
 
   return (
     <>
-      <audio ref={audioRef} />
+      <audio ref={audioRef} onCanPlay={() => setAudioReady(true)} />
       <Dialog open={!audioReady} onOpenChange={() => {}}>
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
@@ -270,7 +239,7 @@ export default function RoomPage({ roomId, initialRoomData }: { roomId: string; 
               />
           </div>
           <DialogFooter>
-            <Button onClick={() => setAudioReady(true)}>Let's Go</Button>
+            <Button onClick={() => audioRef.current?.load()}>Let's Go</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -322,7 +291,7 @@ export default function RoomPage({ roomId, initialRoomData }: { roomId: string; 
                 <h3 className="font-semibold flex items-center gap-2"><Users /> Devices</h3>
             </div>
              <div className="flex-1 p-4 overflow-y-auto">
-                {room.devices && Object.values(room.devices).map((device: Device) => (
+                {devices && Object.values(devices).map((device: Device) => (
                     <div key={device.uid} className="flex items-center justify-between p-2">
                         <span className='flex items-center gap-2'>
                             {device.name}

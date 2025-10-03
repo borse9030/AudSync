@@ -1,3 +1,5 @@
+import { Timestamp } from 'firebase/firestore';
+
 export interface Track {
   id: string;
   storagePath: string;
@@ -17,21 +19,19 @@ export interface PlaybackState {
   state: 'playing' | 'paused';
   trackId: string | null;
   position: number;
-  timestamp: number;
-  startTimeMs?: number;
-  startedBy?: string;
+  timestamp: Timestamp;
 }
 
 export interface Device {
   uid: string;
   name: string;
-  lastSeen: number;
+  lastSeen: Timestamp;
   isHost: boolean;
 }
 
 export interface Room {
   hostId: string;
-  createdAt: number;
+  createdAt: Timestamp;
   playback: PlaybackState;
   playlist: Record<string, Track>;
   devices: Record<string, Device>;

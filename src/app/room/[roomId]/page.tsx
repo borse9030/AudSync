@@ -1,8 +1,5 @@
-import { getDatabase, ref, get } from 'firebase/database';
-import { getFirebase } from '@/lib/firebase';
+"use client"
 import RoomPage from '@/components/RoomPage';
-import { notFound } from 'next/navigation';
-import { type Room } from '@/lib/types';
 import { Music } from 'lucide-react';
 import Link from 'next/link';
 
@@ -10,33 +7,8 @@ type Props = {
   params: { roomId: string };
 };
 
-async function getRoom(roomId: string): Promise<Room | null> {
-  try {
-    const { db } = getFirebase();
-    const roomRef = ref(db, `rooms/${roomId}`);
-    const snapshot = await get(roomRef);
-    if (snapshot.exists()) {
-      return snapshot.val() as Room;
-    }
-    return null;
-  } catch (error) {
-    console.error("Failed to fetch room data on server:", error);
-    // This will likely fail on server if not configured for admin access,
-    // but we can let the client-side handle the final check.
-    return null;
-  }
-}
-
-export default async function Room({ params }: Props) {
+export default function Room({ params }: Props) {
   const { roomId } = params;
-  const initialRoomData = await getRoom(roomId);
-
-  if (!initialRoomData) {
-    // We can show a not found page, but it's better to let the client
-    // try to connect. If it fails there, it will show a toast.
-    // For a better UX, we'll proceed and let the client handle non-existence.
-    // notFound();
-  }
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -51,7 +23,7 @@ export default async function Room({ params }: Props) {
         </div>
       </header>
       <main className="flex-1 overflow-auto">
-        <RoomPage roomId={roomId} initialRoomData={initialRoomData} />
+        <RoomPage roomId={roomId.toUpperCase()} />
       </main>
     </div>
   );
