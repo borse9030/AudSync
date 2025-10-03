@@ -170,9 +170,9 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
       }
 
       const playerState = ytPlayer.getPlayerState();
-      if (state === 'playing' && playerState !== 1) {
+      if (state === 'playing' && playerState !== 1) { // 1 is Playing
         ytPlayer.playVideo();
-      } else if (state === 'paused' && playerState !== 2) {
+      } else if (state === 'paused' && playerState !== 2) { // 2 is Paused
         ytPlayer.pauseVideo();
       }
     } else { // 'file' source
@@ -334,9 +334,6 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   };
 
   const initializeAudio = () => {
-    if (audioRef.current) {
-        audioRef.current.load();
-    }
     setAudioReady(true);
   };
   
@@ -512,3 +509,5 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     </>
   );
 }
+
+    
