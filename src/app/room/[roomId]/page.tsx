@@ -9,7 +9,8 @@ type Props = {
 };
 
 export default function Room({ params }: Props) {
-  const { roomId } = params;
+  // Although this is a client component, Next.js still recommends using `use` for future compatibility.
+  const { roomId } = use(Promise.resolve(params));
 
   return (
     <div className="flex h-full flex-col bg-background">
