@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useUser, useFirestore, useDoc } from '@/firebase';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useUser, useFirestore, useDoc, useMemoFirebase } from '@/firebase';
 import { doc, setDoc, updateDoc, onSnapshot, serverTimestamp, collection, deleteDoc } from 'firebase/firestore';
 import type { Room, Device, PlaybackState, Track } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
@@ -34,7 +34,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   const router = useRouter();
   const { toast } = useToast();
 
-  const roomRef = useMemo(() => firestore ? doc(firestore, 'rooms', roomId) : null, [firestore, roomId]);
+  const roomRef = useMemoFirebase(() => firestore ? doc(firestore, 'rooms', roomId) : null, [firestore, roomId]);
   const { data: room, isLoading: isRoomLoading, error: roomError } = useDoc<Room>(roomRef);
 
   const [isHost, setIsHost] = useState(false);
