@@ -1,5 +1,5 @@
 "use client"
-import { use } from 'react';
+
 import RoomPage from '@/components/RoomPage';
 import { Music } from 'lucide-react';
 import Link from 'next/link';
@@ -9,8 +9,7 @@ type Props = {
 };
 
 export default function Room({ params }: Props) {
-  // Although this is a client component, Next.js still recommends using `use` for future compatibility.
-  const { roomId } = use(Promise.resolve(params));
+  const { roomId } = params;
 
   return (
     <div className="flex h-full flex-col bg-background">
