@@ -43,7 +43,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   const [audioReady, setAudioReady] = useState(false);
   const [deviceName, setDeviceName] = useState('');
   const [devices, setDevices] = useState<Record<string, Device>>({});
-  const [isUploading, setIsUploading] = useState(isUploading);
+  const [isUploading, setIsUploading] = useState(false);
   const [volume, setVolume] = useState(0.5);
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
