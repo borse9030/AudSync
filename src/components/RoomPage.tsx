@@ -43,7 +43,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   const [audioReady, setAudioReady] = useState(false);
   const [deviceName, setDeviceName] = useState('');
   const [devices, setDevices] = useState<Record<string, Device>>({});
-  const [isUploading, setIsUploading] = useState(false);
+  const [isUploading, setIsUploading] = useState(isUploading);
   const [volume, setVolume] = useState(0.5);
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -216,43 +216,49 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     toast({ title: "Uploading track..." });
 
     try {
-      const storage = getStorage();
-      const trackId = doc(collection(firestore, 'tracks')).id;
-      const filePath = `rooms/${roomId}/tracks/${trackId}_${file.name}`;
-      const fileRef = storageRef(storage, filePath);
+        const storage = getStorage();
+        const trackId = doc(collection(firestore, 'tracks')).id;
+        const filePath = `rooms/${roomId}/tracks/${trackId}_${file.name}`;
+        const fileRef = storageRef(storage, filePath);
 
-      await uploadBytes(fileRef, file);
-      const downloadURL = await getDownloadURL(fileRef);
+        await uploadBytes(fileRef, file);
+        const downloadURL = await getDownloadURL(fileRef);
 
-      const audio = new Audio(downloadURL);
-      audio.addEventListener('loadedmetadata', () => {
-        const newTrack: Track = {
-          id: trackId,
-          title: file.name.replace(/\.[^/.]+$/, ""),
-          artist: "Unknown",
-          duration: audio.duration,
-          storagePath: downloadURL,
-        };
+        const audio = new Audio(downloadURL);
+        audio.addEventListener('loadedmetadata', async () => {
+            const newTrack: Track = {
+                id: trackId,
+                title: file.name.replace(/\.[^/.]+$/, ""),
+                artist: "Unknown",
+                duration: audio.duration,
+                storagePath: downloadURL,
+            };
 
-        const roomDocRef = doc(firestore, 'rooms', roomId);
-        updateDocumentNonBlocking(roomDocRef, {
-          [`playlist.${trackId}`]: newTrack,
+            const roomDocRef = doc(firestore, 'rooms', roomId);
+            try {
+                // Use the standard updateDoc for this operation
+                await updateDoc(roomDocRef, {
+                    [`playlist.${trackId}`]: newTrack,
+                });
+                toast({ title: "Upload complete!", description: `${newTrack.title} has been added.` });
+            } catch (updateError) {
+                console.error("Firestore update failed:", updateError);
+                toast({ variant: 'destructive', title: 'Database Error', description: 'Could not add the track to the playlist.' });
+            } finally {
+                setIsUploading(false);
+            }
+        });
+        audio.addEventListener('error', () => {
+            toast({ variant: 'destructive', title: 'Error processing track', description: 'Could not read metadata from the uploaded file.' });
+            setIsUploading(false);
         });
 
-        toast({ title: "Upload complete!", description: `${newTrack.title} has been added.` });
-        setIsUploading(false);
-      });
-       audio.addEventListener('error', () => {
-        toast({ variant: 'destructive', title: 'Error processing track', description: 'Could not read metadata from the uploaded file.' });
-        setIsUploading(false);
-      });
-
     } catch (error) {
-      console.error("Upload failed:", error);
-      toast({ variant: 'destructive', title: 'Upload Failed', description: 'Could not upload the track. Please try again.' });
-      setIsUploading(false);
+        console.error("Upload failed:", error);
+        toast({ variant: 'destructive', title: 'Upload Failed', description: 'Could not upload the track. Please try again.' });
+        setIsUploading(false);
     }
-  };
+};
 
 
   const handleDeviceNameChange = (newName: string) => {
@@ -265,6 +271,9 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   };
 
   const initializeAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.load();
+    }
     setAudioReady(true);
   };
 
@@ -390,3 +399,5 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     </>
   );
 }
+
+    
