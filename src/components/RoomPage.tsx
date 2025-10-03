@@ -1,6 +1,8 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import YouTube from 'react-youtube';
+import type { YouTubePlayer } from 'react-youtube';
 import { useUser, useFirestore, useDoc, useMemoFirebase } from '@/firebase';
 import { doc, setDoc, updateDoc, onSnapshot, serverTimestamp, collection, deleteDoc } from 'firebase/firestore';
 import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
@@ -18,7 +20,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
-import { Loader2, Music, Users, ListMusic, Crown, Upload, Volume2 } from 'lucide-react';
+import { Loader2, ListMusic, Crown, Upload, Volume2, Youtube } from 'lucide-react';
 import { setDocumentNonBlocking, updateDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 
 const MOCK_TRACK: Track = {
@@ -29,6 +31,23 @@ const MOCK_TRACK: Track = {
   storagePath: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
 };
 
+function extractYouTubeVideoId(url: string): string | null {
+  try {
+    const urlObj = new URL(url);
+    if (urlObj.hostname === 'youtu.be') {
+      return urlObj.pathname.slice(1);
+    }
+    if (urlObj.hostname.includes('youtube.com')) {
+      const videoId = urlObj.searchParams.get('v');
+      if (videoId) {
+        return videoId;
+      }
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
 
 export default function RoomPage({ roomId }: { roomId: string; }) {
   const firestore = useFirestore();
@@ -45,9 +64,12 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   const [devices, setDevices] = useState<Record<string, Device>>({});
   const [isUploading, setIsUploading] = useState(false);
   const [volume, setVolume] = useState(0.5);
+  const [youtubeLink, setYoutubeLink] = useState('');
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const youtubePlayerRef = useRef<YouTubePlayer | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const seekingRef = useRef(false);
 
   useEffect(() => {
     if (!isUserLoading && !user) {
@@ -76,6 +98,10 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     const audio = audioRef.current;
     if (audio) {
       audio.volume = volume;
+    }
+    const ytPlayer = youtubePlayerRef.current;
+    if (ytPlayer && 'setVolume' in ytPlayer) {
+      ytPlayer.setVolume(volume * 100);
     }
   }, [volume]);
 
@@ -126,36 +152,59 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
 
   // Playback sync logic
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio || !room?.playback) return;
+    if (!room?.playback || !audioReady) return;
+    const { source, state, position, trackId, youtubeVideoId } = room.playback;
 
-    const { state, position, trackId } = room.playback;
-    const currentTrack = trackId && room.playlist ? room.playlist[trackId] : null;
+    if (source === 'youtube') {
+      const ytPlayer = youtubePlayerRef.current;
+      if (!ytPlayer || !('getPlayerState' in ytPlayer)) return;
 
-    if (currentTrack && audio.src !== currentTrack.storagePath) {
-        audio.src = currentTrack.storagePath;
-        audio.load();
-    }
-    
-    if (state === 'playing') {
-        const estimatedServerTime = Date.now(); // Simplified for now
-        const playbackStartedAt = (room.playback.timestamp as any)?.toMillis() || Date.now();
-        const expectedPosition = position + (estimatedServerTime - playbackStartedAt) / 1000;
-        
-        if (Math.abs(audio.currentTime - expectedPosition) > 1.5) { // 1.5s threshold for correction
-            audio.currentTime = expectedPosition;
-        }
+      const estimatedServerTime = Date.now();
+      const playbackStartedAt = (room.playback.timestamp as any)?.toMillis() || Date.now();
+      const expectedPosition = position + (state === 'playing' ? (estimatedServerTime - playbackStartedAt) / 1000 : 0);
 
-        if (audio.paused) {
-            audio.play().catch(e => console.warn("Autoplay failed", e));
-        }
-
-    } else { // paused
-      if (!audio.paused) {
-        audio.pause();
+      if (Math.abs(ytPlayer.getCurrentTime() - expectedPosition) > 1.5) {
+        ytPlayer.seekTo(expectedPosition, true);
       }
-       if (Math.abs(audio.currentTime - position) > 0.5) {
-        audio.currentTime = position;
+
+      const playerState = ytPlayer.getPlayerState();
+      if (state === 'playing' && playerState !== 1) {
+        ytPlayer.playVideo();
+      } else if (state === 'paused' && playerState !== 2) {
+        ytPlayer.pauseVideo();
+      }
+    } else { // 'file' source
+      const audio = audioRef.current;
+      if (!audio) return;
+      
+      const currentTrack = trackId && room.playlist ? room.playlist[trackId] : null;
+
+      if (currentTrack && audio.src !== currentTrack.storagePath) {
+          audio.src = currentTrack.storagePath;
+          audio.load();
+      } else if (!currentTrack && audio.src) {
+        audio.src = '';
+      }
+      
+      if (state === 'playing') {
+          const estimatedServerTime = Date.now();
+          const playbackStartedAt = (room.playback.timestamp as any)?.toMillis() || Date.now();
+          const expectedPosition = position + (estimatedServerTime - playbackStartedAt) / 1000;
+          
+          if (Math.abs(audio.currentTime - expectedPosition) > 1.5) {
+              audio.currentTime = expectedPosition;
+          }
+
+          if (audio.paused) {
+              audio.play().catch(e => console.warn("Autoplay failed", e));
+          }
+      } else {
+        if (!audio.paused) {
+          audio.pause();
+        }
+         if (Math.abs(audio.currentTime - position) > 0.5) {
+          audio.currentTime = position;
+        }
       }
     }
   }, [room?.playback, audioReady, room?.playlist]);
@@ -163,48 +212,59 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
 
   const handlePlayPause = () => {
     if (!isHost || !room || !user || !firestore) return;
-    const audio = audioRef.current;
-    if (!audio) return;
     
     const roomDocRef = doc(firestore, 'rooms', roomId);
+    const { source, state, trackId, youtubeVideoId } = room.playback;
 
-    let newTrackId = room.playback.trackId;
-    if (!newTrackId && Object.keys(room.playlist || {}).length > 0) {
-      newTrackId = Object.keys(room.playlist)[0];
-    } else if (!newTrackId) {
-      // Add mock track if playlist is empty
-      const updatedPlaylist = { ...room.playlist, [MOCK_TRACK.id]: MOCK_TRACK };
-      newTrackId = MOCK_TRACK.id;
-      updateDocumentNonBlocking(roomDocRef, { playlist: updatedPlaylist });
-    }
+    if (source === 'file') {
+      const audio = audioRef.current;
+      if (!audio) return;
+      
+      let newTrackId = trackId;
+      if (!newTrackId && Object.keys(room.playlist || {}).length > 0) {
+        newTrackId = Object.keys(room.playlist)[0];
+      } else if (!newTrackId) {
+        const updatedPlaylist = { ...room.playlist, [MOCK_TRACK.id]: MOCK_TRACK };
+        newTrackId = MOCK_TRACK.id;
+        updateDocumentNonBlocking(roomDocRef, { playlist: updatedPlaylist });
+      }
 
-    if (room.playback.state === 'paused') {
       updateDocumentNonBlocking(roomDocRef, {
-        "playback.state": 'playing',
+        "playback.state": state === 'paused' ? 'playing' : 'paused',
         "playback.trackId": newTrackId,
         "playback.position": audio.currentTime,
         "playback.timestamp": serverTimestamp(),
       });
-    } else {
+    } else { // youtube
+      const ytPlayer = youtubePlayerRef.current;
+      if (!ytPlayer || !('getPlayerState' in ytPlayer)) return;
+
       updateDocumentNonBlocking(roomDocRef, {
-        "playback.state": 'paused',
-        "playback.position": audio.currentTime,
+        "playback.state": state === 'paused' ? 'playing' : 'paused',
+        "playback.position": ytPlayer.getCurrentTime(),
         "playback.timestamp": serverTimestamp(),
       });
     }
   };
 
 
-  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!isHost || !room || !audioRef.current || !firestore) return;
-    const newPosition = parseFloat(e.target.value);
-    audioRef.current.currentTime = newPosition;
+  const handleSeek = (newPosition: number) => {
+    if (!isHost || !room || !firestore) return;
+    
+    seekingRef.current = true;
+    if (room.playback.source === 'file' && audioRef.current) {
+        audioRef.current.currentTime = newPosition;
+    } else if (room.playback.source === 'youtube' && youtubePlayerRef.current) {
+        youtubePlayerRef.current.seekTo(newPosition, true);
+    }
     
     const roomDocRef = doc(firestore, 'rooms', roomId);
     updateDocumentNonBlocking(roomDocRef, {
       "playback.position": newPosition,
       "playback.timestamp": serverTimestamp(),
     });
+
+    setTimeout(() => { seekingRef.current = false }, 200);
   }
   
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -224,7 +284,8 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
         await uploadBytes(fileRef, file);
         const downloadURL = await getDownloadURL(fileRef);
 
-        const audio = new Audio(downloadURL);
+        const audio = document.createElement('audio');
+        audio.src = downloadURL;
         audio.addEventListener('loadedmetadata', async () => {
             const newTrack: Track = {
                 id: trackId,
@@ -238,6 +299,8 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
             try {
                 await updateDoc(roomDocRef, {
                     [`playlist.${trackId}`]: newTrack,
+                    "playback.source": 'file',
+                    "playback.trackId": trackId,
                 });
                 toast({ title: "Upload complete!", description: `${newTrack.title} has been added.` });
             } catch (updateError) {
@@ -259,7 +322,6 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     }
 };
 
-
   const handleDeviceNameChange = (newName: string) => {
     setDeviceName(newName);
     localStorage.setItem('audsync_device_name', newName);
@@ -270,13 +332,30 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   };
 
   const initializeAudio = () => {
-    if (audioRef.current) {
-        // The audio src will be set by the playback sync effect.
-        // We just need to ensure the user has interacted with the page.
-    }
     setAudioReady(true);
   };
-
+  
+  const handleLoadYoutubeVideo = () => {
+    if (!isHost || !firestore) return;
+    const videoId = extractYouTubeVideoId(youtubeLink);
+    if (videoId) {
+        const roomDocRef = doc(firestore, 'rooms', roomId);
+        updateDocumentNonBlocking(roomDocRef, {
+            "playback.source": 'youtube',
+            "playback.youtubeVideoId": videoId,
+            "playback.state": "paused",
+            "playback.position": 0,
+            "playback.timestamp": serverTimestamp(),
+        });
+        setYoutubeLink('');
+    } else {
+        toast({
+            variant: 'destructive',
+            title: 'Invalid YouTube URL',
+            description: 'Please enter a valid YouTube video URL.'
+        });
+    }
+  };
 
   if (isUserLoading || isRoomLoading || !room || !user) {
     return (
@@ -287,10 +366,18 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   }
 
   const currentTrack = room.playback.trackId ? room.playlist?.[room.playback.trackId] : null;
+  const currentPosition = room.playback.source === 'file' 
+    ? audioRef.current?.currentTime 
+    : youtubePlayerRef.current?.getCurrentTime();
+  const currentDuration = room.playback.source === 'file' 
+    ? currentTrack?.duration 
+    : youtubePlayerRef.current?.getDuration();
+
 
   return (
     <>
-      <audio ref={audioRef} onCanPlay={() => {}} />
+      <audio ref={audioRef} onCanPlay={() => {}} className="hidden" />
+
       <Dialog open={!audioReady} onOpenChange={() => {}}>
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
@@ -315,47 +402,68 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
       </Dialog>
       
       <div className="grid md:grid-cols-[1fr_300px] h-full">
-        <div className="flex flex-col items-center justify-center p-8 bg-muted/20">
-            <div className='text-center'>
-                <h2 className="text-3xl font-bold">{currentTrack?.title || 'No track selected'}</h2>
-                <p className="text-lg text-muted-foreground">{currentTrack?.artist || 'Select a track to start'}</p>
-            </div>
+        <div className="flex flex-col items-center justify-center p-8 bg-muted/20 relative">
+          <div className={cn("w-full h-full", room.playback.source === 'youtube' ? 'opacity-100' : 'opacity-0')}>
+            <YouTube
+              videoId={room.playback.youtubeVideoId}
+              onReady={(e) => { youtubePlayerRef.current = e.target; e.target.setVolume(volume * 100); }}
+              className="absolute inset-0 w-full h-full"
+              iframeClassName="w-full h-full"
+              opts={{ playerVars: { controls: 0, modestbranding: 1, showinfo: 0, rel: 0 } }}
+            />
+          </div>
+
+          <div className="relative z-10 text-center bg-background/50 backdrop-blur-sm p-4 rounded-lg">
+            <h2 className="text-3xl font-bold">{room.playback.source === 'file' ? (currentTrack?.title || 'No track selected') : 'YouTube Video'}</h2>
+            <p className="text-lg text-muted-foreground">{room.playback.source === 'file' ? (currentTrack?.artist || 'Select a track to start') : room.playback.youtubeVideoId}</p>
             
             <div className="mt-8 w-full max-w-md">
-                <input
-                    type="range"
-                    min="0"
-                    max={currentTrack?.duration || 100}
-                    value={audioRef.current?.currentTime || room.playback.position}
-                    onChange={handleSeek}
+                <Slider
+                    min={0}
+                    max={currentDuration || 100}
+                    value={[currentPosition || room.playback.position]}
+                    onValueChange={(value) => handleSeek(value[0])}
                     className="w-full"
                     disabled={!isHost}
                 />
                 <div className="flex justify-between text-xs text-muted-foreground mt-1">
-                    <span>{new Date((audioRef.current?.currentTime || 0) * 1000).toISOString().substr(14, 5)}</span>
-                    <span>{currentTrack ? new Date(currentTrack.duration * 1000).toISOString().substr(14, 5) : '00:00'}</span>
+                    <span>{new Date((currentPosition || 0) * 1000).toISOString().substr(14, 5)}</span>
+                    <span>{currentDuration ? new Date(currentDuration * 1000).toISOString().substr(14, 5) : '00:00'}</span>
                 </div>
             </div>
             
-            {isHost && (
-                <div className="mt-4 flex items-center gap-4">
-                    <Button size="lg" onClick={handlePlayPause}>
-                        {room.playback.state === 'playing' ? 'Pause' : 'Play'}
-                    </Button>
-                    <div className="flex items-center gap-2 w-32">
-                      <Volume2 className="h-5 w-5"/>
-                      <Slider
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        value={[volume]}
-                        onValueChange={(value) => setVolume(value[0])}
-                      />
-                    </div>
+            <div className="mt-4 flex items-center justify-center gap-4">
+                {isHost && (
+                  <Button size="lg" onClick={handlePlayPause}>
+                      {room.playback.state === 'playing' ? 'Pause' : 'Play'}
+                  </Button>
+                )}
+                <div className="flex items-center gap-2 w-32">
+                  <Volume2 className="h-5 w-5"/>
+                  <Slider
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={[volume]}
+                    onValueChange={(value) => setVolume(value[0])}
+                  />
                 </div>
-            )}
+            </div>
+          </div>
         </div>
         <div className="border-l bg-card flex flex-col">
+            {isHost && (
+                <div className='p-4 border-b'>
+                  <div className="flex gap-2">
+                      <Input 
+                          placeholder="Paste YouTube link..." 
+                          value={youtubeLink}
+                          onChange={(e) => setYoutubeLink(e.target.value)}
+                      />
+                      <Button onClick={handleLoadYoutubeVideo}><Youtube className="mr-2 h-4 w-4" /> Load</Button>
+                  </div>
+                </div>
+            )}
             <div className="p-4 border-b flex justify-between items-center">
                 <h3 className="font-semibold flex items-center gap-2"><ListMusic/> Playlist</h3>
                 {isHost && (
@@ -381,7 +489,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
             </div>
 
             <div className="p-4 border-b border-t">
-                <h3 className="font-semibold flex items-center gap-2"><Users /> Devices</h3>
+                <h3 className="font-semibold flex items-center gap-2"><Crown /> Devices</h3>
             </div>
              <div className="flex-1 p-4 overflow-y-auto">
                 {devices && Object.values(devices).map((device: Device) => (

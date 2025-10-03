@@ -54,7 +54,9 @@ export default function Home() {
         createdAt: serverTimestamp(),
         playback: {
           state: 'paused',
+          source: 'file',
           trackId: null,
+          youtubeVideoId: null,
           position: 0,
           timestamp: serverTimestamp(),
         },
