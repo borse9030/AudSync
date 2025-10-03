@@ -11,11 +11,6 @@ type Props = {
 
 export default function Room({ params }: Props) {
   const { roomId } = params;
-  const [isClient, setIsClient] = React.useState(false);
-
-  React.useEffect(() => {
-    setIsClient(true);
-  }, []);
 
   return (
     <div className="flex h-screen flex-col bg-transparent text-foreground overflow-hidden">
@@ -30,13 +25,7 @@ export default function Room({ params }: Props) {
         </div>
       </header>
       <main className="flex-1 overflow-auto">
-        {isClient ? (
-          <RoomPage roomId={roomId.toUpperCase()} />
-        ) : (
-          <div className="flex h-full items-center justify-center">
-            <LoaderCircle className="h-10 w-10 animate-spin text-primary" />
-          </div>
-        )}
+        <RoomPage roomId={roomId.toUpperCase()} />
       </main>
     </div>
   );
