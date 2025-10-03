@@ -57,6 +57,7 @@ export default function Home() {
           source: 'youtube',
           trackId: null,
           youtubeVideoId: null,
+          trackTitle: null,
           position: 0,
           timestamp: serverTimestamp(),
         },

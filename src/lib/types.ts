@@ -22,6 +22,7 @@ export interface PlaybackState {
   source: PlaybackSource;
   trackId: string | null; // For file source
   youtubeVideoId: string | null; // For youtube source
+  trackTitle: string | null; // For displaying current track name
   position: number;
   timestamp: Timestamp;
 }

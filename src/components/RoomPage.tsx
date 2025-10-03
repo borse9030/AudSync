@@ -93,8 +93,13 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const nameFromStorage = localStorage.getItem('audsync_device_name') || `Device ${Math.random().toString(36).substring(2, 6)}`;
-      setDeviceName(nameFromStorage);
+      const nameFromStorage = localStorage.getItem('audsync_device_name');
+      if (nameFromStorage) {
+        setDeviceName(nameFromStorage);
+      } else {
+        const randomName = `Device ${Math.random().toString(36).substring(2, 6)}`;
+        setDeviceName(randomName);
+      }
     }
   }, []);
 
@@ -141,7 +146,9 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   // Playback sync logic
   useEffect(() => {
     if (!room?.playback || !audioReady || seekingRef.current) return;
-    const { state, position } = room.playback;
+
+    const { state, position, source } = room.playback;
+    if (source !== 'youtube') return;
 
     const ytPlayer = youtubePlayerRef.current;
     if (!ytPlayer || !('getPlayerState' in ytPlayer)) return;
@@ -215,19 +222,37 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     setAudioReady(true);
   };
   
-  const handleLoadYoutubeVideo = () => {
+  const handleLoadYoutubeVideo = async () => {
     if (!isHost || !firestore) return;
     const videoId = extractYouTubeVideoId(youtubeLink);
     if (videoId) {
-        const roomDocRef = doc(firestore, 'rooms', roomId);
-        updateDocumentNonBlocking(roomDocRef, {
-            "playback.source": 'youtube',
-            "playback.youtubeVideoId": videoId,
-            "playback.state": "paused",
-            "playback.position": 0,
-            "playback.timestamp": serverTimestamp(),
-        });
-        setYoutubeLink('');
+        try {
+          const oembedUrl = `https://www.youtube.com/oembed?url=http://www.youtube.com/watch?v=${videoId}&format=json`;
+          const response = await fetch(oembedUrl);
+          if (!response.ok) {
+            throw new Error('Failed to fetch video title');
+          }
+          const data = await response.json();
+          const title = data.title;
+
+          const roomDocRef = doc(firestore, 'rooms', roomId);
+          updateDocumentNonBlocking(roomDocRef, {
+              "playback.source": 'youtube',
+              "playback.youtubeVideoId": videoId,
+              "playback.trackTitle": title,
+              "playback.state": "paused",
+              "playback.position": 0,
+              "playback.timestamp": serverTimestamp(),
+          });
+          setYoutubeLink('');
+
+        } catch(e) {
+            toast({
+                variant: 'destructive',
+                title: 'Could not load video',
+                description: 'Failed to fetch video details. The video might be private or deleted.',
+            });
+        }
     } else {
         toast({
             variant: 'destructive',
@@ -284,11 +309,11 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
             />
           </div>
 
-          <div className="relative z-10 text-center bg-background/50 backdrop-blur-sm p-4 rounded-lg">
-            <h2 className="text-3xl font-bold">{room.playback.youtubeVideoId ? 'Now Playing' : 'No Video Loaded'}</h2>
-            <p className="text-lg text-muted-foreground">{room.playback.youtubeVideoId || 'Paste a link to start'}</p>
+          <div className="relative z-10 text-center bg-background/50 backdrop-blur-sm p-4 rounded-lg max-w-lg">
+            <h2 className="text-3xl font-bold">{room.playback.trackTitle || 'No Video Loaded'}</h2>
+            <p className="text-lg text-muted-foreground">{room.playback.trackTitle ? 'Now Playing' : 'Paste a link to start'}</p>
             
-            <div className="mt-8 w-full max-w-md">
+            <div className="mt-8 w-full">
                 <Slider
                     min={0}
                     max={currentDuration || 100}
