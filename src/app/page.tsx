@@ -58,10 +58,10 @@ export default function Home() {
           trackId: null,
           youtubeVideoId: null,
           trackTitle: null,
+          artist: null,
           position: 0,
           timestamp: serverTimestamp(),
         },
-        playlist: {},
         devices: {},
       });
       router.push(`/room/${newRoomCode}`);
@@ -120,7 +120,7 @@ export default function Home() {
 
   if (isUserLoading) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-background">
+      <div className="flex min-h-screen flex-col items-center justify-center bg-transparent">
         <Loader2 className="h-12 w-12 animate-spin text-primary" />
         <p className="mt-4 text-muted-foreground">Connecting...</p>
       </div>
@@ -128,24 +128,24 @@ export default function Home() {
   }
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-background p-4 sm:p-8">
-      <div className="absolute top-8 left-8 flex items-center gap-2 text-xl font-bold text-primary">
-        <Music className="h-6 w-6" />
-        <span>AudSync</span>
+    <main className="flex min-h-screen flex-col items-center justify-center bg-transparent p-4 sm:p-8">
+      <div className="absolute top-8 left-8 flex items-center gap-2 text-2xl font-bold text-primary">
+        <Music className="h-8 w-8" />
+        <span className="font-headline">AudSync</span>
       </div>
-      <Card className="w-full max-w-sm shadow-xl animate-in fade-in-50 zoom-in-95 duration-500">
+      <Card className="w-full max-w-sm shadow-xl animate-in fade-in-50 zoom-in-95 duration-500 bg-white/5 backdrop-blur-md border border-white/10">
         <CardHeader className="text-center">
-          <CardTitle className="text-3xl font-bold tracking-tight">
+          <CardTitle className="text-3xl font-bold tracking-tight text-primary">
             Listen Together
           </CardTitle>
-          <CardDescription className="pt-2">
+          <CardDescription className="pt-2 text-foreground/80">
             Create a room and share the vibe, perfectly in sync.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <Button
             size="lg"
-            className="w-full font-bold"
+            className="w-full font-bold bg-primary/80 text-primary-foreground hover:bg-primary transition-all duration-300 shadow-lg hover:shadow-primary/40"
             onClick={handleCreateRoom}
             disabled={isCreating || isJoining || isUserLoading || !user}
           >
@@ -156,24 +156,24 @@ export default function Home() {
           </Button>
 
           <div className="flex items-center gap-4">
-            <Separator className="flex-1" />
+            <Separator className="flex-1 bg-white/10" />
             <span className="text-xs text-muted-foreground">OR</span>
-            <Separator className="flex-1" />
+            <Separator className="flex-1 bg-white/10" />
           </div>
           <form onSubmit={handleJoinRoom} className="flex flex-col gap-4">
             <Input
               type="text"
-              placeholder="Enter room code"
+              placeholder="ENTER ROOM CODE"
               value={roomCode}
-              onChange={(e) => setRoomCode(e.target.value)}
-              className="text-center text-lg"
+              onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+              className="text-center tracking-widest font-mono text-lg bg-transparent border-white/20 focus:ring-primary focus:border-primary"
               maxLength={6}
               disabled={isUserLoading || !user}
             />
             <Button
               variant="secondary"
               type="submit"
-              className="w-full"
+              className="w-full bg-white/10 hover:bg-white/20 text-foreground transition-all duration-300"
               disabled={isCreating || isJoining || isUserLoading || !user}
             >
               {isJoining ? (

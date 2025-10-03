@@ -20,9 +20,10 @@ export type PlaybackSource = 'file' | 'youtube';
 export interface PlaybackState {
   state: 'playing' | 'paused';
   source: PlaybackSource;
-  trackId: string | null; // For file source
-  youtubeVideoId: string | null; // For youtube source
-  trackTitle: string | null; // For displaying current track name
+  trackId: string | null;
+  youtubeVideoId: string | null;
+  trackTitle: string | null;
+  artist: string | null;
   position: number;
   timestamp: Timestamp;
 }
@@ -38,6 +39,5 @@ export interface Room {
   hostId: string;
   createdAt: Timestamp;
   playback: PlaybackState;
-  playlist: Record<string, Track>;
   devices: Record<string, Device>;
 }

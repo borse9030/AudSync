@@ -19,10 +19,9 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
-import { Loader2, Crown, Volume2, Youtube, LoaderCircle } from 'lucide-react';
-import { setDocumentNonBlocking, updateDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
+import { Loader2, Crown, Volume2, Youtube, Play, Pause, LoaderCircle, Users } from 'lucide-react';
+import { setDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 import { cn } from "@/lib/utils";
-
 
 function extractYouTubeVideoId(url: string): string | null {
   try {
@@ -57,9 +56,11 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   const [devices, setDevices] = useState<Record<string, Device>>({});
   const [volume, setVolume] = useState(0.5);
   const [youtubeLink, setYoutubeLink] = useState('');
+  const [isYoutubeLoading, setIsYoutubeLoading] = useState(false);
   
   const youtubePlayerRef = useRef<YouTubePlayer | null>(null);
   const seekingRef = useRef(false);
+  const localPlaybackState = useRef<'playing' | 'paused'>('paused');
 
   useEffect(() => {
     if (!isUserLoading && !user) {
@@ -92,14 +93,15 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   }, [volume]);
 
   useEffect(() => {
+    let nameFromStorage = '';
     if (typeof window !== 'undefined') {
-      const nameFromStorage = localStorage.getItem('audsync_device_name');
-      if (nameFromStorage) {
-        setDeviceName(nameFromStorage);
-      } else {
-        const randomName = `Device ${Math.random().toString(36).substring(2, 6)}`;
-        setDeviceName(randomName);
-      }
+      nameFromStorage = localStorage.getItem('audsync_device_name') || '';
+    }
+    if (nameFromStorage) {
+      setDeviceName(nameFromStorage);
+    } else {
+      const randomName = `Device-${Math.random().toString(36).substring(2, 6)}`;
+      setDeviceName(randomName);
     }
   }, []);
 
@@ -143,34 +145,34 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   }, [firestore, roomId]);
 
 
-  // Playback sync logic
   useEffect(() => {
     if (!room?.playback || !audioReady || seekingRef.current) return;
 
-    const { state, position, source } = room.playback;
-    if (source !== 'youtube') return;
-
+    const { state, position, youtubeVideoId } = room.playback;
     const ytPlayer = youtubePlayerRef.current;
-    if (!ytPlayer || !('getPlayerState' in ytPlayer)) return;
+    if (!ytPlayer || typeof ytPlayer.getPlayerState !== 'function') return;
+
+    if (ytPlayer.getVideoData()?.video_id !== youtubeVideoId) {
+        if(youtubeVideoId) ytPlayer.loadVideoById(youtubeVideoId);
+    }
 
     const estimatedServerTime = Date.now();
-    const playbackStartedAt = (room.playback.timestamp as any)?.toMillis() || Date.now();
-    const expectedPosition = position + (state === 'playing' ? (estimatedServerTime - playbackStartedAt) / 1000 : 0);
+    const remoteTimestamp = (room.playback.timestamp as any)?.toMillis() || Date.now();
+    const expectedPosition = position + (state === 'playing' ? (estimatedServerTime - remoteTimestamp) / 1000 : 0);
     
-    const clientPosition = ytPlayer.getCurrentTime();
+    const clientPosition = ytPlayer.getCurrentTime() || 0;
 
     if (Math.abs(clientPosition - expectedPosition) > 1.5) {
-      ytPlayer.seekTo(expectedPosition, true);
+        ytPlayer.seekTo(expectedPosition, true);
     }
-
+    
     const playerState = ytPlayer.getPlayerState();
-    if (state === 'playing' && playerState !== 1) { // 1 is Playing
-      ytPlayer.playVideo();
-    } else if (state === 'paused' && playerState !== 2) { // 2 is Paused
-      ytPlayer.pauseVideo();
+    if (state === 'playing' && playerState !== 1) {
+        ytPlayer.playVideo();
+    } else if (state === 'paused' && playerState !== 2) {
+        ytPlayer.pauseVideo();
     }
-
-  }, [room?.playback, audioReady]);
+}, [room?.playback, audioReady, isHost]);
 
 
   const handlePlayPause = () => {
@@ -180,9 +182,9 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     const { state } = room.playback;
 
     const ytPlayer = youtubePlayerRef.current;
-    if (!ytPlayer || !('getPlayerState' in ytPlayer)) return;
+    if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
 
-    updateDocumentNonBlocking(roomDocRef, {
+    updateDoc(roomDocRef, {
       "playback.state": state === 'paused' ? 'playing' : 'paused',
       "playback.position": ytPlayer.getCurrentTime(),
       "playback.timestamp": serverTimestamp(),
@@ -190,17 +192,18 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   };
 
 
-  const handleSeek = (newPosition: number) => {
+  const handleSeek = (newPosition: number[]) => {
     if (!isHost || !room || !firestore) return;
     
+    const pos = newPosition[0];
     seekingRef.current = true;
     if (youtubePlayerRef.current) {
-        youtubePlayerRef.current.seekTo(newPosition, true);
+        youtubePlayerRef.current.seekTo(pos, true);
     }
     
     const roomDocRef = doc(firestore, 'rooms', roomId);
-    updateDocumentNonBlocking(roomDocRef, {
-      "playback.position": newPosition,
+    updateDoc(roomDocRef, {
+      "playback.position": pos,
       "playback.timestamp": serverTimestamp(),
     });
 
@@ -214,7 +217,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     }
     if(user && firestore) {
         const deviceRef = doc(firestore, `rooms/${roomId}/devices/${user.uid}`);
-        updateDocumentNonBlocking(deviceRef, { name: newName });
+        updateDoc(deviceRef, { name: newName });
     }
   };
 
@@ -226,20 +229,24 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     if (!isHost || !firestore) return;
     const videoId = extractYouTubeVideoId(youtubeLink);
     if (videoId) {
+        setIsYoutubeLoading(true);
         try {
+          // Using a proxy to avoid CORS issues in development
           const oembedUrl = `https://www.youtube.com/oembed?url=http://www.youtube.com/watch?v=${videoId}&format=json`;
           const response = await fetch(oembedUrl);
           if (!response.ok) {
-            throw new Error('Failed to fetch video title');
+            throw new Error('Failed to fetch video details');
           }
           const data = await response.json();
           const title = data.title;
+          const artist = data.author_name;
 
           const roomDocRef = doc(firestore, 'rooms', roomId);
-          updateDocumentNonBlocking(roomDocRef, {
+          updateDoc(roomDocRef, {
               "playback.source": 'youtube',
               "playback.youtubeVideoId": videoId,
               "playback.trackTitle": title,
+              "playback.artist": artist,
               "playback.state": "paused",
               "playback.position": 0,
               "playback.timestamp": serverTimestamp(),
@@ -250,8 +257,10 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
             toast({
                 variant: 'destructive',
                 title: 'Could not load video',
-                description: 'Failed to fetch video details. The video might be private or deleted.',
+                description: 'The video might be private, deleted, or unavailable.',
             });
+        } finally {
+            setIsYoutubeLoading(false);
         }
     } else {
         toast({
@@ -269,19 +278,24 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
       </div>
     );
   }
-
+  
   const currentPosition = youtubePlayerRef.current?.getCurrentTime();
   const currentDuration = youtubePlayerRef.current?.getDuration();
 
+  const formatTime = (seconds: number = 0) => {
+    const date = new Date(0);
+    date.setSeconds(seconds);
+    return date.toISOString().substr(14, 5);
+  }
 
   return (
     <>
       <Dialog open={!audioReady} onOpenChange={() => {}}>
-        <DialogContent className="sm:max-w-[425px]">
+        <DialogContent className="sm:max-w-[425px] bg-gray-900/80 backdrop-blur-sm border-white/20 text-foreground">
           <DialogHeader>
-            <DialogTitle>Ready to Sync?</DialogTitle>
+            <DialogTitle className="text-primary">Ready to Sync?</DialogTitle>
             <DialogDescription>
-              A single tap is needed to enable synchronized audio playback in your browser.
+              A single tap is needed to enable synchronized audio playback. Please also set your device name.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -289,91 +303,103 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
                 id="name"
                 value={deviceName}
                 onChange={(e) => handleDeviceNameChange(e.target.value)}
-                className="col-span-3"
+                className="col-span-3 bg-transparent border-white/20"
                 placeholder='Enter your device name'
               />
           </div>
           <DialogFooter>
-            <Button onClick={initializeAudio}>Let's Go</Button>
+            <Button onClick={initializeAudio} className="bg-primary/80 hover:bg-primary text-primary-foreground">Let's Go</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
       
-      <div className="grid md:grid-cols-[1fr_300px] h-full">
-        <div className="flex flex-col items-center justify-center p-8 bg-muted/20 relative">
-          <div className="absolute w-0 h-0 opacity-0">
-            <YouTube
-              videoId={room.playback.youtubeVideoId}
-              onReady={(e) => { youtubePlayerRef.current = e.target; e.target.setVolume(volume * 100); }}
-              opts={{ playerVars: { controls: 0, modestbranding: 1, showinfo: 0, rel: 0 } }}
-            />
-          </div>
-
-          <div className="relative z-10 text-center bg-background/50 backdrop-blur-sm p-4 rounded-lg max-w-lg">
-            <h2 className="text-3xl font-bold">{room.playback.trackTitle || 'No Video Loaded'}</h2>
-            <p className="text-lg text-muted-foreground">{room.playback.trackTitle ? 'Now Playing' : 'Paste a link to start'}</p>
-            
-            <div className="mt-8 w-full">
-                <Slider
-                    min={0}
-                    max={currentDuration || 100}
-                    value={[currentPosition || room.playback.position]}
-                    onValueChange={(value) => handleSeek(value[0])}
-                    className="w-full"
-                    disabled={!isHost}
+      <div className="grid md:grid-cols-[1fr_350px] h-full gap-8 p-4 md:p-8">
+        <div className="flex flex-col items-center justify-center p-4 sm:p-8 bg-white/5 backdrop-blur-md border border-white/10 rounded-xl shadow-lg relative h-full">
+            <div className="absolute top-0 left-0 w-px h-px opacity-0 overflow-hidden">
+                <YouTube
+                videoId={room.playback.youtubeVideoId}
+                onReady={(e) => { youtubePlayerRef.current = e.target; e.target.setVolume(volume * 100); }}
+                opts={{ playerVars: { controls: 0, modestbranding: 1, showinfo: 0, rel: 0, iv_load_policy: 3 } }}
+                className="w-full h-full"
                 />
-                <div className="flex justify-between text-xs text-muted-foreground mt-1">
-                    <span>{new Date((currentPosition || 0) * 1000).toISOString().substr(14, 5)}</span>
-                    <span>{currentDuration ? new Date(currentDuration * 1000).toISOString().substr(14, 5) : '00:00'}</span>
+            </div>
+
+            <div className="relative z-10 text-center w-full flex flex-col justify-center items-center h-full">
+                <div className="flex-grow flex flex-col justify-center items-center">
+                    <h2 className="text-2xl md:text-4xl font-bold tracking-tight text-foreground transition-all duration-300">
+                        {room.playback.trackTitle || 'No Video Loaded'}
+                    </h2>
+                    <p className="text-base md:text-lg text-muted-foreground mt-2 transition-all duration-300">
+                        {room.playback.artist || (room.playback.trackTitle ? 'Now Playing' : 'Paste a YouTube link to start')}
+                    </p>
+                </div>
+                
+                <div className="w-full max-w-md mt-auto">
+                    <Slider
+                        min={0}
+                        max={currentDuration || 100}
+                        value={[currentPosition || room.playback.position]}
+                        onValueChange={handleSeek}
+                        className="w-full cursor-pointer"
+                        disabled={!isHost}
+                    />
+                    <div className="flex justify-between text-xs text-muted-foreground mt-2 font-mono">
+                        <span>{formatTime(currentPosition)}</span>
+                        <span>{formatTime(currentDuration)}</span>
+                    </div>
+                </div>
+                
+                <div className="mt-6 flex items-center justify-center gap-6">
+                    {isHost && (
+                        <Button size="icon" onClick={handlePlayPause} className="rounded-full w-16 h-16 bg-primary/80 hover:bg-primary shadow-lg hover:shadow-primary/40 transition-all duration-300">
+                           {room.playback.state === 'playing' ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8" />}
+                        </Button>
+                    )}
+                    <div className="flex items-center gap-2 w-32">
+                        <Volume2 className="h-5 w-5 text-muted-foreground"/>
+                        <Slider
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={[volume]}
+                            onValueChange={(v) => setVolume(v[0])}
+                            className="cursor-pointer"
+                        />
+                    </div>
                 </div>
             </div>
-            
-            <div className="mt-4 flex items-center justify-center gap-4">
-                {isHost && (
-                  <Button size="lg" onClick={handlePlayPause}>
-                      {room.playback.state === 'playing' ? 'Pause' : 'Play'}
-                  </Button>
-                )}
-                <div className="flex items-center gap-2 w-32">
-                  <Volume2 className="h-5 w-5"/>
-                  <Slider
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={[volume]}
-                    onValueChange={(value) => setVolume(value[0])}
-                  />
-                </div>
-            </div>
-          </div>
         </div>
-        <div className="border-l bg-card flex flex-col">
+        <div className="flex flex-col gap-6">
             {isHost && (
-                <div className='p-4 border-b'>
-                  <div className="flex gap-2">
-                      <Input 
-                          placeholder="Paste YouTube link..." 
-                          value={youtubeLink}
-                          onChange={(e) => setYoutubeLink(e.target.value)}
-                      />
-                      <Button onClick={handleLoadYoutubeVideo}><Youtube className="mr-2 h-4 w-4" /> Load</Button>
-                  </div>
+                <div className='p-4 bg-white/5 backdrop-blur-md border border-white/10 rounded-xl shadow-lg'>
+                    <h3 className="font-semibold flex items-center gap-2 mb-3 text-primary"><Youtube/> Load Video</h3>
+                    <div className="flex gap-2">
+                        <Input 
+                            placeholder="Paste YouTube link..." 
+                            value={youtubeLink}
+                            onChange={(e) => setYoutubeLink(e.target.value)}
+                            className="bg-transparent border-white/20"
+                        />
+                        <Button onClick={handleLoadYoutubeVideo} disabled={isYoutubeLoading} className="bg-primary/80 hover:bg-primary text-primary-foreground">
+                            {isYoutubeLoading ? <Loader2 className="animate-spin" /> : 'Load'}
+                        </Button>
+                    </div>
                 </div>
             )}
             
-            <div className="p-4 border-b border-t">
-                <h3 className="font-semibold flex items-center gap-2"><Crown /> Devices</h3>
-            </div>
-             <div className="flex-1 p-4 overflow-y-auto">
-                {devices && Object.values(devices).map((device: Device) => (
-                    <div key={device.uid} className="flex items-center justify-between p-2">
-                        <span className='flex items-center gap-2'>
-                            {device.name}
-                            {device.isHost && <Crown className="h-4 w-4 text-accent" />}
-                        </span>
-                        <div className="h-2 w-2 rounded-full bg-green-500"></div>
-                    </div>
-                ))}
+            <div className="flex-1 p-4 bg-white/5 backdrop-blur-md border border-white/10 rounded-xl shadow-lg flex flex-col min-h-0">
+                <h3 className="font-semibold flex items-center gap-2 mb-3 text-primary"><Users /> Connected Devices</h3>
+                <div className="flex-1 overflow-y-auto pr-2">
+                    {devices && Object.values(devices).map((device: Device) => (
+                        <div key={device.uid} className="flex items-center justify-between p-2 rounded-md hover:bg-white/10 transition-colors">
+                            <span className='flex items-center gap-2 text-foreground/90'>
+                                {device.name}
+                                {device.isHost && <Crown className="h-4 w-4 text-accent" />}
+                            </span>
+                            <div className="h-2 w-2 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]"></div>
+                        </div>
+                    ))}
+                </div>
             </div>
         </div>
       </div>
