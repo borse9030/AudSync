@@ -207,6 +207,13 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     }
   };
 
+  const initializeAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.load();
+    }
+    setAudioReady(true);
+  };
+
 
   if (isUserLoading || isRoomLoading || !room || !user) {
     return (
@@ -239,7 +246,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
               />
           </div>
           <DialogFooter>
-            <Button onClick={() => audioRef.current?.load()}>not working</Button>
+            <Button onClick={initializeAudio}>Let's Go</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
