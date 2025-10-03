@@ -1,4 +1,5 @@
 "use client"
+import { use } from 'react';
 import RoomPage from '@/components/RoomPage';
 import { Music } from 'lucide-react';
 import Link from 'next/link';
@@ -28,5 +29,3 @@ export default function Room({ params }: Props) {
     </div>
   );
 }
-
-export const dynamic = 'force-dynamic';
