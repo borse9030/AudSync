@@ -1,7 +1,7 @@
 "use client"
 
 import RoomPage from '@/components/RoomPage';
-import { Music } from 'lucide-react';
+import { Music, LoaderCircle } from 'lucide-react';
 import Link from 'next/link';
 import * as React from 'react';
 
@@ -11,6 +11,11 @@ type Props = {
 
 export default function Room({ params }: Props) {
   const { roomId } = React.use(params);
+  const [isClient, setIsClient] = React.useState(false);
+
+  React.useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -25,7 +30,13 @@ export default function Room({ params }: Props) {
         </div>
       </header>
       <main className="flex-1 overflow-auto">
-        <RoomPage roomId={roomId.toUpperCase()} />
+        {isClient ? (
+          <RoomPage roomId={roomId.toUpperCase()} />
+        ) : (
+          <div className="flex h-full items-center justify-center">
+            <LoaderCircle className="h-10 w-10 animate-spin text-primary" />
+          </div>
+        )}
       </main>
     </div>
   );

@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import YouTube from 'react-youtube';
 import type { YouTubePlayer } from 'react-youtube';
 import { useUser, useFirestore, useDoc, useMemoFirebase } from '@/firebase';
-import { doc, onSnapshot, serverTimestamp, collection } from 'firebase/firestore';
+import { doc, onSnapshot, serverTimestamp, collection, updateDoc } from 'firebase/firestore';
 import type { Room, Device } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
@@ -19,7 +19,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
-import { Loader2, Crown, Volume2, Youtube } from 'lucide-react';
+import { Loader2, Crown, Volume2, Youtube, LoaderCircle } from 'lucide-react';
 import { setDocumentNonBlocking, updateDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 import { cn } from "@/lib/utils";
 
@@ -92,10 +92,8 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   }, [volume]);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-        const nameFromStorage = localStorage.getItem('audsync_device_name') || `Device ${Math.random().toString(36).substring(2, 6)}`;
-        setDeviceName(nameFromStorage);
-    }
+      const nameFromStorage = localStorage.getItem('audsync_device_name') || `Device ${Math.random().toString(36).substring(2, 6)}`;
+      setDeviceName(nameFromStorage);
   }, []);
 
   useEffect(() => {
@@ -236,7 +234,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   if (isUserLoading || isRoomLoading || !room || !user) {
     return (
       <div className="flex h-full items-center justify-center">
-        <Loader2 className="h-10 w-10 animate-spin text-primary" />
+        <LoaderCircle className="h-10 w-10 animate-spin text-primary" />
       </div>
     );
   }
