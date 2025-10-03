@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import YouTube from 'react-youtube';
 import type { YouTubePlayer } from 'react-youtube';
 import { useUser, useFirestore, useDoc, useMemoFirebase } from '@/firebase';
-import { doc, onSnapshot, serverTimestamp, collection, updateDoc } from 'firebase/firestore';
+import { doc, onSnapshot, serverTimestamp, collection, updateDoc, writeBatch } from 'firebase/firestore';
 import type { Room, Device } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
@@ -20,7 +20,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
 import { Loader2, Crown, Volume2, Youtube, Play, Pause, LoaderCircle, Users } from 'lucide-react';
-import { setDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
+import { setDocumentNonBlocking, deleteDocumentNonBlocking, updateDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 import { cn } from "@/lib/utils";
 
 function extractYouTubeVideoId(url: string): string | null {
@@ -60,7 +60,8 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   
   const youtubePlayerRef = useRef<YouTubePlayer | null>(null);
   const seekingRef = useRef(false);
-  const localPlaybackState = useRef<'playing' | 'paused'>('paused');
+  const localPlaybackStateRef = useRef(room?.playback.state || 'paused');
+  const localPositionRef = useRef(room?.playback.position || 0);
 
   useEffect(() => {
     if (!isUserLoading && !user) {
@@ -81,7 +82,8 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
 
   useEffect(() => {
     if (user && room) {
-      setIsHost(room.hostId === user.uid);
+      const host = room.hostId === user.uid;
+      setIsHost(host);
     }
   }, [user, room]);
   
@@ -146,9 +148,14 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
 
 
   useEffect(() => {
-    if (!room?.playback || !audioReady || seekingRef.current || isHost) return;
+    if (!room?.playback || !audioReady || seekingRef.current) return;
+    
+    if (isHost) {
+      // Host's player is source of truth, no sync needed from Firestore.
+      return;
+    }
 
-    const { state, position, youtubeVideoId } = room.playback;
+    const { state, position, youtubeVideoId, timestamp } = room.playback;
     const ytPlayer = youtubePlayerRef.current;
     if (!ytPlayer || typeof ytPlayer.getPlayerState !== 'function') return;
 
@@ -156,10 +163,11 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
         if(youtubeVideoId) ytPlayer.loadVideoById(youtubeVideoId);
     }
 
-    const estimatedServerTime = Date.now();
-    const remoteTimestamp = (room.playback.timestamp as any)?.toMillis() || Date.now();
-    const expectedPosition = position + (state === 'playing' ? (estimatedServerTime - remoteTimestamp) / 1000 : 0);
+    const serverTimeNow = Date.now();
+    const remoteTimestamp = (timestamp as any)?.toMillis() || serverTimeNow;
+    const timeSinceUpdate = (serverTimeNow - remoteTimestamp) / 1000;
     
+    const expectedPosition = position + (state === 'playing' ? timeSinceUpdate : 0);
     const clientPosition = ytPlayer.getCurrentTime() || 0;
 
     if (Math.abs(clientPosition - expectedPosition) > 1.5) {
@@ -172,18 +180,35 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     } else if (state === 'paused' && playerState !== 2) {
         ytPlayer.pauseVideo();
     }
-}, [room?.playback, audioReady, isHost]);
+  }, [room?.playback, audioReady, isHost]);
+
+  // Effect to update local position for the host to render slider correctly
+  useEffect(() => {
+    if (isHost && localPlaybackStateRef.current === 'playing') {
+      const interval = setInterval(() => {
+        const currentTime = youtubePlayerRef.current?.getCurrentTime();
+        if (typeof currentTime === 'number') {
+            localPositionRef.current = currentTime;
+            // Force a re-render by updating some state, if slider doesn't move
+        }
+      }, 500);
+      return () => clearInterval(interval);
+    }
+  }, [isHost]);
 
 
   const handlePlayPause = () => {
     if (!isHost || !room || !user || !firestore) return;
     
     const roomDocRef = doc(firestore, 'rooms', roomId);
-    const { state } = room.playback;
-    const newState = state === 'paused' ? 'playing' : 'paused';
+    const newState = localPlaybackStateRef.current === 'paused' ? 'playing' : 'paused';
+    localPlaybackStateRef.current = newState;
 
     const ytPlayer = youtubePlayerRef.current;
     if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
+    
+    const currentPosition = ytPlayer.getCurrentTime();
+    localPositionRef.current = currentPosition;
 
     if (newState === 'playing') {
       ytPlayer.playVideo();
@@ -191,9 +216,9 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
       ytPlayer.pauseVideo();
     }
 
-    updateDoc(roomDocRef, {
+    updateDocumentNonBlocking(roomDocRef, {
       "playback.state": newState,
-      "playback.position": ytPlayer.getCurrentTime(),
+      "playback.position": currentPosition,
       "playback.timestamp": serverTimestamp(),
     });
   };
@@ -204,12 +229,14 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     
     const pos = newPosition[0];
     seekingRef.current = true;
+    localPositionRef.current = pos;
+
     if (youtubePlayerRef.current) {
         youtubePlayerRef.current.seekTo(pos, true);
     }
     
     const roomDocRef = doc(firestore, 'rooms', roomId);
-    updateDoc(roomDocRef, {
+    updateDocumentNonBlocking(roomDocRef, {
       "playback.position": pos,
       "playback.timestamp": serverTimestamp(),
     });
@@ -224,11 +251,17 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     }
     if(user && firestore) {
         const deviceRef = doc(firestore, `rooms/${roomId}/devices/${user.uid}`);
-        updateDoc(deviceRef, { name: newName });
+        updateDocumentNonBlocking(deviceRef, { name: newName });
     }
   };
 
   const initializeAudio = () => {
+    const player = youtubePlayerRef.current;
+    if (player && typeof player.playVideo === 'function') {
+      // This user interaction "unlocks" playback on mobile devices
+      player.playVideo();
+      player.pauseVideo();
+    }
     setAudioReady(true);
   };
   
@@ -238,7 +271,6 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     if (videoId) {
         setIsYoutubeLoading(true);
         try {
-          // Using a proxy to avoid CORS issues in development
           const oembedUrl = `https://www.youtube.com/oembed?url=http://www.youtube.com/watch?v=${videoId}&format=json`;
           const response = await fetch(oembedUrl);
           if (!response.ok) {
@@ -249,13 +281,14 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
           const artist = data.author_name;
 
           const roomDocRef = doc(firestore, 'rooms', roomId);
+          const batch = writeBatch(firestore);
 
           if (youtubePlayerRef.current) {
             youtubePlayerRef.current.loadVideoById(videoId);
             youtubePlayerRef.current.pauseVideo();
           }
 
-          updateDoc(roomDocRef, {
+          batch.update(roomDocRef, {
               "playback.source": 'youtube',
               "playback.youtubeVideoId": videoId,
               "playback.trackTitle": title,
@@ -265,6 +298,10 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
               "playback.timestamp": serverTimestamp(),
           });
           setYoutubeLink('');
+          localPlaybackStateRef.current = 'paused';
+          localPositionRef.current = 0;
+          
+          await batch.commit();
 
         } catch(e) {
             toast({
@@ -292,7 +329,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     );
   }
   
-  const currentPosition = youtubePlayerRef.current?.getCurrentTime();
+  const currentPosition = isHost ? localPositionRef.current : youtubePlayerRef.current?.getCurrentTime();
   const currentDuration = youtubePlayerRef.current?.getDuration();
 
   const formatTime = (seconds: number = 0) => {
@@ -332,6 +369,14 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
                 <YouTube
                 videoId={room.playback.youtubeVideoId}
                 onReady={(e) => { youtubePlayerRef.current = e.target; e.target.setVolume(volume * 100); }}
+                onStateChange={(e) => {
+                  if(isHost) {
+                    // Update local state for host based on player events
+                    const playerState = e.target.getPlayerState();
+                    if(playerState === 1) localPlaybackStateRef.current = 'playing';
+                    if(playerState === 2 || playerState === 0) localPlaybackStateRef.current = 'paused';
+                  }
+                }}
                 opts={{ playerVars: { controls: 0, modestbranding: 1, showinfo: 0, rel: 0, iv_load_policy: 3 } }}
                 className="w-full h-full"
                 />
@@ -365,7 +410,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
                 <div className="mt-6 flex items-center justify-center gap-6">
                     {isHost && (
                         <Button size="icon" onClick={handlePlayPause} className="rounded-full w-16 h-16 bg-primary/80 hover:bg-primary shadow-lg hover:shadow-primary/40 transition-all duration-300">
-                           {room.playback.state === 'playing' ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8" />}
+                           {localPlaybackStateRef.current === 'playing' ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8" />}
                         </Button>
                     )}
                     <div className="flex items-center gap-2 w-32">
@@ -419,4 +464,4 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     </>
   );
 }
-
+    
