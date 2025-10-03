@@ -2,15 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  getDatabase,
-  ref,
-  set,
-  get,
-  serverTimestamp,
-} from 'firebase/database';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { app } from '@/lib/firebase';
+import { getDatabase, ref, set, get, serverTimestamp } from 'firebase/database';
+import { useAuth, useUser } from '@/firebase';
+import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -24,39 +18,25 @@ import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Music } from 'lucide-react';
+import { getFirebase } from '@/lib/firebase';
 
 export default function Home() {
   const [roomCode, setRoomCode] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
-  const [uid, setUid] = useState<string | null>(null);
   const router = useRouter();
   const { toast } = useToast();
+  const auth = useAuth();
+  const { user, isUserLoading } = useUser();
 
   useEffect(() => {
-    const auth = getAuth(app);
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setUid(user.uid);
-        setIsLoading(false);
-      } else {
-        signInAnonymously(auth).catch((error) => {
-          console.error('Anonymous sign-in failed:', error);
-          toast({
-            variant: 'destructive',
-            title: 'Authentication Failed',
-            description: 'Could not sign you in. Please try again later.',
-          });
-          setIsLoading(false);
-        });
-      }
-    });
-    return () => unsubscribe();
-  }, [toast]);
+    if (!isUserLoading && !user) {
+      initiateAnonymousSignIn(auth);
+    }
+  }, [isUserLoading, user, auth]);
 
   const handleCreateRoom = async () => {
-    if (!uid) {
+    if (!user) {
       toast({
         variant: 'destructive',
         title: 'Not Authenticated',
@@ -65,13 +45,13 @@ export default function Home() {
       return;
     }
     setIsCreating(true);
-    const db = getDatabase(app);
+    const { db } = getFirebase();
     const newRoomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     const roomRef = ref(db, `rooms/${newRoomCode}`);
 
     try {
       await set(roomRef, {
-        hostId: uid,
+        hostId: user.uid,
         createdAt: serverTimestamp(),
         playback: {
           state: 'paused',
@@ -96,7 +76,7 @@ export default function Home() {
 
   const handleJoinRoom = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!uid) {
+    if (!user) {
       toast({
         variant: 'destructive',
         title: 'Not Authenticated',
@@ -112,7 +92,7 @@ export default function Home() {
       return;
     }
     setIsJoining(true);
-    const db = getDatabase(app);
+    const { db } = getFirebase();
     const roomRef = ref(db, `rooms/${roomCode.toUpperCase()}`);
     try {
       const snapshot = await get(roomRef);
@@ -137,7 +117,7 @@ export default function Home() {
     }
   };
 
-  if (isLoading) {
+  if (isUserLoading) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-background">
         <Loader2 className="h-12 w-12 animate-spin text-primary" />
@@ -166,7 +146,7 @@ export default function Home() {
             size="lg"
             className="w-full font-bold"
             onClick={handleCreateRoom}
-            disabled={isCreating || isJoining || isLoading}
+            disabled={isCreating || isJoining || isUserLoading || !user}
           >
             {isCreating ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -187,13 +167,13 @@ export default function Home() {
               onChange={(e) => setRoomCode(e.target.value)}
               className="text-center text-lg"
               maxLength={6}
-              disabled={isLoading}
+              disabled={isUserLoading || !user}
             />
             <Button
               variant="secondary"
               type="submit"
               className="w-full"
-              disabled={isCreating || isJoining || isLoading}
+              disabled={isCreating || isJoining || isUserLoading || !user}
             >
               {isJoining ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

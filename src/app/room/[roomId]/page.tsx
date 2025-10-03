@@ -1,5 +1,5 @@
 import { getDatabase, ref, get } from 'firebase/database';
-import { app } from '@/lib/firebase'; // Use client SDK for initial checks
+import { getFirebase } from '@/lib/firebase';
 import RoomPage from '@/components/RoomPage';
 import { notFound } from 'next/navigation';
 import { type Room } from '@/lib/types';
@@ -12,7 +12,7 @@ type Props = {
 
 async function getRoom(roomId: string): Promise<Room | null> {
   try {
-    const db = getDatabase(app);
+    const { db } = getFirebase();
     const roomRef = ref(db, `rooms/${roomId}`);
     const snapshot = await get(roomRef);
     if (snapshot.exists()) {

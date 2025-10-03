@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { getAuth, onAuthStateChanged, User } from 'firebase/auth';
+import { useAuth, useUser } from '@/firebase';
 import { getDatabase, ref, onValue, onDisconnect, set, serverTimestamp, goOffline, goOnline } from 'firebase/database';
-import { app } from '@/lib/firebase';
+import { getFirebase } from '@/lib/firebase';
 import type { Room, Device, PlaybackState, Track } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
@@ -18,6 +18,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Loader2, Music, Users, ListMusic, Crown } from 'lucide-react';
+import { User } from 'firebase/auth';
 
 // A mock audio file. In a real app, this would come from user uploads.
 const MOCK_TRACK: Track = {
@@ -31,11 +32,10 @@ const MOCK_TRACK: Track = {
 
 export default function RoomPage({ roomId, initialRoomData }: { roomId: string; initialRoomData: Room | null }) {
   const [room, setRoom] = useState<Room | null>(initialRoomData);
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const { user: currentUser, isUserLoading } = useUser();
   const [isHost, setIsHost] = useState(false);
   const [serverOffset, setServerOffset] = useState(0);
   const [audioReady, setAudioReady] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
   const [deviceName, setDeviceName] = useState('');
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -49,12 +49,9 @@ export default function RoomPage({ roomId, initialRoomData }: { roomId: string; 
 
   // Auth and Initial Connection
   useEffect(() => {
-    const auth = getAuth(app);
-    const db = getDatabase(app);
+    const { db } = getFirebase();
 
-    const authUnsubscribe = onAuthStateChanged(auth, user => {
-      if (user) {
-        setCurrentUser(user);
+    if (!isUserLoading && currentUser) {
         goOnline(db);
 
         const offsetRef = ref(db, '.info/serverTimeOffset');
@@ -63,26 +60,22 @@ export default function RoomPage({ roomId, initialRoomData }: { roomId: string; 
         const deviceNameFromStorage = localStorage.getItem('audsync_device_name') || `Device ${Math.random().toString(36).substring(2, 6)}`;
         setDeviceName(deviceNameFromStorage);
         
-        const presenceRef = ref(db, `rooms/${roomId}/devices/${user.uid}`);
+        const presenceRef = ref(db, `rooms/${roomId}/devices/${currentUser.uid}`);
         onDisconnect(presenceRef).remove();
-
-        setIsLoading(false);
-      } else {
+    } else if (!isUserLoading && !currentUser) {
         router.push('/');
-      }
-    });
+    }
     
     return () => {
-        authUnsubscribe();
         goOffline(db);
     };
-  }, [roomId, router]);
+  }, [roomId, router, currentUser, isUserLoading]);
 
   // Room data listener
   useEffect(() => {
     if (!currentUser) return;
 
-    const db = getDatabase(app);
+    const { db } = getFirebase();
     const roomRef = ref(db, `rooms/${roomId}`);
 
     const roomUnsubscribe = onValue(roomRef, (snapshot) => {
@@ -163,9 +156,9 @@ export default function RoomPage({ roomId, initialRoomData }: { roomId: string; 
 
     if (room?.playback.state === 'playing') {
         syncInterval.current = setInterval(() => {
-            const db = getDatabase(app);
+            const { db } = getFirebase();
             const playbackRef = ref(db, `rooms/${roomId}/playback`);
-            set({
+            set(playbackRef, {
                 ...room.playback,
                 position: audio.currentTime,
                 timestamp: serverTimestamp(),
@@ -177,7 +170,7 @@ export default function RoomPage({ roomId, initialRoomData }: { roomId: string; 
         if(syncInterval.current) clearInterval(syncInterval.current);
     }
 
-  }, [isHost, room?.playback, roomId]);
+  }, [isHost, room, roomId]);
 
 
   const handlePlayPause = () => {
@@ -185,7 +178,7 @@ export default function RoomPage({ roomId, initialRoomData }: { roomId: string; 
     const audio = audioRef.current;
     if (!audio) return;
 
-    const db = getDatabase(app);
+    const { db } = getFirebase();
     const playbackRef = ref(db, `rooms/${roomId}/playback`);
 
     let newTrackId = room.playback.trackId;
@@ -224,7 +217,7 @@ export default function RoomPage({ roomId, initialRoomData }: { roomId: string; 
     const newPosition = parseFloat(e.target.value);
     audioRef.current.currentTime = newPosition;
     
-    const db = getDatabase(app);
+    const { db } = getFirebase();
     const playbackRef = ref(db, `rooms/${roomId}/playback`);
 
     set(playbackRef, {
@@ -239,14 +232,14 @@ export default function RoomPage({ roomId, initialRoomData }: { roomId: string; 
     setDeviceName(newName);
     localStorage.setItem('audsync_device_name', newName);
     if(currentUser) {
-        const db = getDatabase(app);
+        const { db } = getFirebase();
         const deviceRef = ref(db, `rooms/${roomId}/devices/${currentUser.uid}/name`);
         set(deviceRef, newName);
     }
   };
 
 
-  if (isLoading || !room || !currentUser) {
+  if (isUserLoading || !room || !currentUser) {
     return (
       <div className="flex h-full items-center justify-center">
         <Loader2 className="h-10 w-10 animate-spin text-primary" />
