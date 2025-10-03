@@ -146,7 +146,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
 
 
   useEffect(() => {
-    if (!room?.playback || !audioReady || seekingRef.current) return;
+    if (!room?.playback || !audioReady || seekingRef.current || isHost) return;
 
     const { state, position, youtubeVideoId } = room.playback;
     const ytPlayer = youtubePlayerRef.current;
@@ -180,12 +180,19 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     
     const roomDocRef = doc(firestore, 'rooms', roomId);
     const { state } = room.playback;
+    const newState = state === 'paused' ? 'playing' : 'paused';
 
     const ytPlayer = youtubePlayerRef.current;
     if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
 
+    if (newState === 'playing') {
+      ytPlayer.playVideo();
+    } else {
+      ytPlayer.pauseVideo();
+    }
+
     updateDoc(roomDocRef, {
-      "playback.state": state === 'paused' ? 'playing' : 'paused',
+      "playback.state": newState,
       "playback.position": ytPlayer.getCurrentTime(),
       "playback.timestamp": serverTimestamp(),
     });
@@ -242,6 +249,12 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
           const artist = data.author_name;
 
           const roomDocRef = doc(firestore, 'rooms', roomId);
+
+          if (youtubePlayerRef.current) {
+            youtubePlayerRef.current.loadVideoById(videoId);
+            youtubePlayerRef.current.pauseVideo();
+          }
+
           updateDoc(roomDocRef, {
               "playback.source": 'youtube',
               "playback.youtubeVideoId": videoId,
@@ -406,3 +419,4 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     </>
   );
 }
+
