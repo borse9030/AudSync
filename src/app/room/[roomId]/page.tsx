@@ -3,13 +3,14 @@
 import RoomPage from '@/components/RoomPage';
 import { Music } from 'lucide-react';
 import Link from 'next/link';
+import * as React from 'react';
 
 type Props = {
-  params: { roomId: string };
+  params: Promise<{ roomId: string }>;
 };
 
 export default function Room({ params }: Props) {
-  const { roomId } = params;
+  const { roomId } = React.use(params);
 
   return (
     <div className="flex h-full flex-col bg-background">
