@@ -236,7 +236,6 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
 
             const roomDocRef = doc(firestore, 'rooms', roomId);
             try {
-                // Use the standard updateDoc for this operation
                 await updateDoc(roomDocRef, {
                     [`playlist.${trackId}`]: newTrack,
                 });
@@ -272,7 +271,8 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
 
   const initializeAudio = () => {
     if (audioRef.current) {
-      audioRef.current.load();
+        // The audio src will be set by the playback sync effect.
+        // We just need to ensure the user has interacted with the page.
     }
     setAudioReady(true);
   };
@@ -399,5 +399,3 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     </>
   );
 }
-
-    
