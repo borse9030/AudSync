@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useUser, useFirestore, useDoc, useMemoFirebase } from '@/firebase';
 import { doc, setDoc, updateDoc, onSnapshot, serverTimestamp, collection, deleteDoc } from 'firebase/firestore';
+import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import type { Room, Device, PlaybackState, Track } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
@@ -16,7 +17,8 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Loader2, Music, Users, ListMusic, Crown } from 'lucide-react';
+import { Slider } from '@/components/ui/slider';
+import { Loader2, Music, Users, ListMusic, Crown, Upload, Volume2 } from 'lucide-react';
 import { setDocumentNonBlocking, updateDocumentNonBlocking, deleteDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 
 const MOCK_TRACK: Track = {
@@ -38,14 +40,14 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   const { data: room, isLoading: isRoomLoading, error: roomError } = useDoc<Room>(roomRef);
 
   const [isHost, setIsHost] = useState(false);
-  const [serverOffset, setServerOffset] = useState(0);
   const [audioReady, setAudioReady] = useState(false);
   const [deviceName, setDeviceName] = useState('');
   const [devices, setDevices] = useState<Record<string, Device>>({});
+  const [isUploading, setIsUploading] = useState(false);
+  const [volume, setVolume] = useState(0.5);
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
-
-  const getServerNow = useCallback(() => Date.now() + serverOffset, [serverOffset]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!isUserLoading && !user) {
@@ -69,6 +71,13 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
       setIsHost(room.hostId === user.uid);
     }
   }, [user, room]);
+  
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.volume = volume;
+    }
+  }, [volume]);
 
   useEffect(() => {
     const deviceNameFromStorage = localStorage.getItem('audsync_device_name') || `Device ${Math.random().toString(36).substring(2, 6)}`;
@@ -123,13 +132,13 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     const { state, position, trackId } = room.playback;
     const currentTrack = trackId && room.playlist ? room.playlist[trackId] : null;
 
-    if (state === 'playing' && currentTrack) {
-        if (!audio.src.endsWith(currentTrack.storagePath)) {
-            audio.src = currentTrack.storagePath;
-            audio.load();
-        }
-
-        const estimatedServerTime = getServerNow();
+    if (currentTrack && audio.src !== currentTrack.storagePath) {
+        audio.src = currentTrack.storagePath;
+        audio.load();
+    }
+    
+    if (state === 'playing') {
+        const estimatedServerTime = Date.now(); // Simplified for now
         const playbackStartedAt = (room.playback.timestamp as any)?.toMillis() || Date.now();
         const expectedPosition = position + (estimatedServerTime - playbackStartedAt) / 1000;
         
@@ -149,7 +158,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
         audio.currentTime = position;
       }
     }
-  }, [room?.playback, audioReady, getServerNow, room?.playlist]);
+  }, [room?.playback, audioReady, room?.playlist]);
 
 
   const handlePlayPause = () => {
@@ -197,6 +206,54 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
       "playback.timestamp": serverTimestamp(),
     });
   }
+  
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (!isHost || !firestore || !user) return;
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    toast({ title: "Uploading track..." });
+
+    try {
+      const storage = getStorage();
+      const trackId = doc(collection(firestore, 'tracks')).id;
+      const filePath = `rooms/${roomId}/tracks/${trackId}_${file.name}`;
+      const fileRef = storageRef(storage, filePath);
+
+      await uploadBytes(fileRef, file);
+      const downloadURL = await getDownloadURL(fileRef);
+
+      const audio = new Audio(downloadURL);
+      audio.addEventListener('loadedmetadata', () => {
+        const newTrack: Track = {
+          id: trackId,
+          title: file.name.replace(/\.[^/.]+$/, ""),
+          artist: "Unknown",
+          duration: audio.duration,
+          storagePath: downloadURL,
+        };
+
+        const roomDocRef = doc(firestore, 'rooms', roomId);
+        updateDocumentNonBlocking(roomDocRef, {
+          [`playlist.${trackId}`]: newTrack,
+        });
+
+        toast({ title: "Upload complete!", description: `${newTrack.title} has been added.` });
+        setIsUploading(false);
+      });
+       audio.addEventListener('error', () => {
+        toast({ variant: 'destructive', title: 'Error processing track', description: 'Could not read metadata from the uploaded file.' });
+        setIsUploading(false);
+      });
+
+    } catch (error) {
+      console.error("Upload failed:", error);
+      toast({ variant: 'destructive', title: 'Upload Failed', description: 'Could not upload the track. Please try again.' });
+      setIsUploading(false);
+    }
+  };
+
 
   const handleDeviceNameChange = (newName: string) => {
     setDeviceName(newName);
@@ -208,9 +265,6 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   };
 
   const initializeAudio = () => {
-    if (audioRef.current) {
-      audioRef.current.load();
-    }
     setAudioReady(true);
   };
 
@@ -227,7 +281,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
 
   return (
     <>
-      <audio ref={audioRef} onCanPlay={() => setAudioReady(true)} />
+      <audio ref={audioRef} onCanPlay={() => {}} />
       <Dialog open={!audioReady} onOpenChange={() => {}}>
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
@@ -257,33 +311,53 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
                 <h2 className="text-3xl font-bold">{currentTrack?.title || 'No track selected'}</h2>
                 <p className="text-lg text-muted-foreground">{currentTrack?.artist || 'Select a track to start'}</p>
             </div>
-            {isHost && (
-                <div className="mt-8 w-full max-w-md">
-                    <input
-                        type="range"
-                        min="0"
-                        max={currentTrack?.duration || 100}
-                        value={room.playback.position}
-                        onChange={handleSeek}
-                        className="w-full"
-                    />
-                    <div className="flex justify-between text-xs text-muted-foreground mt-1">
-                        <span>{new Date(room.playback.position * 1000).toISOString().substr(14, 5)}</span>
-                        <span>{currentTrack ? new Date(currentTrack.duration * 1000).toISOString().substr(14, 5) : '00:00'}</span>
-                    </div>
+            
+            <div className="mt-8 w-full max-w-md">
+                <input
+                    type="range"
+                    min="0"
+                    max={currentTrack?.duration || 100}
+                    value={audioRef.current?.currentTime || room.playback.position}
+                    onChange={handleSeek}
+                    className="w-full"
+                    disabled={!isHost}
+                />
+                <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                    <span>{new Date((audioRef.current?.currentTime || 0) * 1000).toISOString().substr(14, 5)}</span>
+                    <span>{currentTrack ? new Date(currentTrack.duration * 1000).toISOString().substr(14, 5) : '00:00'}</span>
                 </div>
-            )}
+            </div>
+            
             {isHost && (
-                <div className="mt-4">
+                <div className="mt-4 flex items-center gap-4">
                     <Button size="lg" onClick={handlePlayPause}>
                         {room.playback.state === 'playing' ? 'Pause' : 'Play'}
                     </Button>
+                    <div className="flex items-center gap-2 w-32">
+                      <Volume2 className="h-5 w-5"/>
+                      <Slider
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={[volume]}
+                        onValueChange={(value) => setVolume(value[0])}
+                      />
+                    </div>
                 </div>
             )}
         </div>
         <div className="border-l bg-card flex flex-col">
-            <div className="p-4 border-b">
+            <div className="p-4 border-b flex justify-between items-center">
                 <h3 className="font-semibold flex items-center gap-2"><ListMusic/> Playlist</h3>
+                {isHost && (
+                  <>
+                    <Button size="sm" onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
+                      {isUploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                      Add Track
+                    </Button>
+                    <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept="audio/*" className="hidden" />
+                  </>
+                )}
             </div>
             <div className="flex-1 p-4 overflow-y-auto">
                 {room.playlist && Object.values(room.playlist).map(track => (
@@ -292,6 +366,9 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
                         <p className="text-sm text-muted-foreground">{track.artist}</p>
                     </div>
                 ))}
+                {(!room.playlist || Object.keys(room.playlist).length === 0) && (
+                  <p className="text-sm text-muted-foreground text-center py-4">Playlist is empty.</p>
+                )}
             </div>
 
             <div className="p-4 border-b border-t">
