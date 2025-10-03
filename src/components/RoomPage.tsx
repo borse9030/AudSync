@@ -334,6 +334,9 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   };
 
   const initializeAudio = () => {
+    if (audioRef.current) {
+        audioRef.current.load();
+    }
     setAudioReady(true);
   };
   
@@ -509,5 +512,3 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     </>
   );
 }
-
-    
