@@ -239,7 +239,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
               />
           </div>
           <DialogFooter>
-            <Button onClick={() => audioRef.current?.load()}>Let's Go</Button>
+            <Button onClick={() => audioRef.current?.load()}>not working</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
