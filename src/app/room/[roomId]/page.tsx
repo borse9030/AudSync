@@ -1,16 +1,23 @@
 "use client"
 
 import RoomPage from '@/components/RoomPage';
-import { Music, LoaderCircle } from 'lucide-react';
+import { Music } from 'lucide-react';
 import Link from 'next/link';
 import * as React from 'react';
+import { useParams } from 'next/navigation';
 
-type Props = {
-  params: { roomId: string };
-};
+export default function Room() {
+  const params = useParams();
+  const roomId = Array.isArray(params.roomId) ? params.roomId[0] : params.roomId;
 
-export default function Room({ params }: Props) {
-  const { roomId } = params;
+  if (!roomId) {
+    // Optionally, render a loading state or redirect
+    return (
+      <div className="flex h-screen items-center justify-center">
+        Loading...
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen flex-col bg-transparent text-foreground overflow-hidden">
