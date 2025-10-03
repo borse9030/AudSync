@@ -2,8 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { getDatabase, ref, set, get, serverTimestamp } from 'firebase/database';
-import { useAuth, useUser } from '@/firebase';
+import { useAuth, useUser, useFirestore } from '@/firebase';
 import { initiateAnonymousSignIn } from '@/firebase/non-blocking-login';
 import { Button } from '@/components/ui/button';
 import {
@@ -18,7 +17,7 @@ import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Music } from 'lucide-react';
-import { getFirebase } from '@/lib/firebase';
+import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 
 export default function Home() {
   const [roomCode, setRoomCode] = useState('');
@@ -27,6 +26,7 @@ export default function Home() {
   const router = useRouter();
   const { toast } = useToast();
   const auth = useAuth();
+  const firestore = useFirestore();
   const { user, isUserLoading } = useUser();
 
   useEffect(() => {
@@ -45,12 +45,11 @@ export default function Home() {
       return;
     }
     setIsCreating(true);
-    const { db } = getFirebase();
     const newRoomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-    const roomRef = ref(db, `rooms/${newRoomCode}`);
+    const roomRef = doc(firestore, `rooms/${newRoomCode}`);
 
     try {
-      await set(roomRef, {
+      await setDoc(roomRef, {
         hostId: user.uid,
         createdAt: serverTimestamp(),
         playback: {
@@ -92,11 +91,10 @@ export default function Home() {
       return;
     }
     setIsJoining(true);
-    const { db } = getFirebase();
-    const roomRef = ref(db, `rooms/${roomCode.toUpperCase()}`);
+    const roomRef = doc(firestore, `rooms/${roomCode.toUpperCase()}`);
     try {
-      const snapshot = await get(roomRef);
-      if (snapshot.exists()) {
+      const docSnap = await getDoc(roomRef);
+      if (docSnap.exists()) {
         router.push(`/room/${roomCode.toUpperCase()}`);
       } else {
         toast({
