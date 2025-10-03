@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import YouTube from 'react-youtube';
 import type { YouTubePlayer } from 'react-youtube';
 import { useUser, useFirestore, useDoc, useMemoFirebase } from '@/firebase';
-import { doc, onSnapshot, serverTimestamp, collection, updateDoc, writeBatch } from 'firebase/firestore';
+import { doc, onSnapshot, serverTimestamp, collection, writeBatch } from 'firebase/firestore';
 import type { Room, Device } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
@@ -60,7 +60,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   
   const youtubePlayerRef = useRef<YouTubePlayer | null>(null);
   const seekingRef = useRef(false);
-  const localPlaybackStateRef = useRef(room?.playback.state || 'paused');
+  const [localPlaybackState, setLocalPlaybackState] = useState<'playing' | 'paused'>('paused');
   const localPositionRef = useRef(room?.playback.position || 0);
 
   useEffect(() => {
@@ -151,7 +151,10 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     if (!room?.playback || !audioReady || seekingRef.current) return;
     
     if (isHost) {
-      // Host's player is source of truth, no sync needed from Firestore.
+      // Host's player is the source of truth, but we still need to update local state for UI
+      if (localPlaybackState !== room.playback.state) {
+        setLocalPlaybackState(room.playback.state);
+      }
       return;
     }
 
@@ -184,7 +187,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
 
   // Effect to update local position for the host to render slider correctly
   useEffect(() => {
-    if (isHost && localPlaybackStateRef.current === 'playing') {
+    if (isHost && localPlaybackState === 'playing') {
       const interval = setInterval(() => {
         const currentTime = youtubePlayerRef.current?.getCurrentTime();
         if (typeof currentTime === 'number') {
@@ -194,15 +197,15 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
       }, 500);
       return () => clearInterval(interval);
     }
-  }, [isHost]);
+  }, [isHost, localPlaybackState]);
 
 
   const handlePlayPause = () => {
     if (!isHost || !room || !user || !firestore) return;
     
     const roomDocRef = doc(firestore, 'rooms', roomId);
-    const newState = localPlaybackStateRef.current === 'paused' ? 'playing' : 'paused';
-    localPlaybackStateRef.current = newState;
+    const newState = localPlaybackState === 'paused' ? 'playing' : 'paused';
+    setLocalPlaybackState(newState);
 
     const ytPlayer = youtubePlayerRef.current;
     if (!ytPlayer || typeof ytPlayer.getCurrentTime !== 'function') return;
@@ -298,7 +301,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
               "playback.timestamp": serverTimestamp(),
           });
           setYoutubeLink('');
-          localPlaybackStateRef.current = 'paused';
+          setLocalPlaybackState('paused');
           localPositionRef.current = 0;
           
           await batch.commit();
@@ -373,8 +376,8 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
                   if(isHost) {
                     // Update local state for host based on player events
                     const playerState = e.target.getPlayerState();
-                    if(playerState === 1) localPlaybackStateRef.current = 'playing';
-                    if(playerState === 2 || playerState === 0) localPlaybackStateRef.current = 'paused';
+                    if(playerState === 1) setLocalPlaybackState('playing');
+                    if(playerState === 2 || playerState === 0) setLocalPlaybackState('paused');
                   }
                 }}
                 opts={{ playerVars: { controls: 0, modestbranding: 1, showinfo: 0, rel: 0, iv_load_policy: 3 } }}
@@ -410,7 +413,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
                 <div className="mt-6 flex items-center justify-center gap-6">
                     {isHost && (
                         <Button size="icon" onClick={handlePlayPause} className="rounded-full w-16 h-16 bg-primary/80 hover:bg-primary shadow-lg hover:shadow-primary/40 transition-all duration-300">
-                           {localPlaybackStateRef.current === 'playing' ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8" />}
+                           {localPlaybackState === 'playing' ? <Pause className="w-8 h-8" /> : <Play className="w-8 h-8" />}
                         </Button>
                     )}
                     <div className="flex items-center gap-2 w-32">
