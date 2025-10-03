@@ -11,6 +11,12 @@ type Props = {
 
 export default function Room({ params }: Props) {
   const { roomId } = React.use(params);
+  const [isClient, setIsClient] = React.useState(false);
+
+  React.useEffect(() => {
+    setIsClient(true);
+  }, []);
+
 
   if (!roomId) {
     // Optionally, render a loading state or redirect
@@ -34,7 +40,7 @@ export default function Room({ params }: Props) {
         </div>
       </header>
       <main className="flex-1 overflow-auto">
-        <RoomPage roomId={roomId.toUpperCase()} />
+        {isClient ? <RoomPage roomId={roomId.toUpperCase()} /> : null}
       </main>
     </div>
   );
