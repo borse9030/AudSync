@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import YouTube from 'react-youtube';
 import type { YouTubePlayer } from 'react-youtube';
 import { useUser, useFirestore, useDoc, useMemoFirebase } from '@/firebase';
-import { doc, onSnapshot, serverTimestamp, collection, writeBatch } from 'firebase/firestore';
+import { doc, onSnapshot, serverTimestamp, collection, writeBatch, deleteDoc } from 'firebase/firestore';
 import type { Room, Device } from '@/lib/types';
 import { useToast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
@@ -19,7 +19,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Slider } from '@/components/ui/slider';
-import { Loader2, Crown, Volume2, Youtube, Play, Pause, LoaderCircle, Users } from 'lucide-react';
+import { Loader2, Crown, Volume2, Youtube, Play, Pause, LoaderCircle, Users, X } from 'lucide-react';
 import { setDocumentNonBlocking, deleteDocumentNonBlocking, updateDocumentNonBlocking } from '@/firebase/non-blocking-updates';
 import { cn } from "@/lib/utils";
 
@@ -54,7 +54,7 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   const [audioReady, setAudioReady] = useState(false);
   const [deviceName, setDeviceName] = useState('');
   const [devices, setDevices] = useState<Record<string, Device>>({});
-  const [volume, setVolume] = useState(0.5);
+  const [localVolume, setLocalVolume] = useState(0.5);
   const [youtubeLink, setYoutubeLink] = useState('');
   const [isYoutubeLoading, setIsYoutubeLoading] = useState(false);
   
@@ -90,9 +90,10 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
   useEffect(() => {
     const ytPlayer = youtubePlayerRef.current;
     if (ytPlayer && 'setVolume' in ytPlayer) {
-      ytPlayer.setVolume(volume * 100);
+      const volumeToSet = isHost ? localVolume : room?.volume ?? 0.5;
+      ytPlayer.setVolume(volumeToSet * 100);
     }
-  }, [volume]);
+  }, [localVolume, room?.volume, isHost, audioReady]);
 
   useEffect(() => {
     let nameFromStorage = '';
@@ -107,11 +108,13 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     }
   }, []);
 
+  // Heartbeat effect for all users
   useEffect(() => {
     if (!user || !firestore || !deviceName || !room) return;
 
     const deviceRef = doc(firestore, `rooms/${roomId}/devices/${user.uid}`);
-    
+
+    // Initial registration
     setDocumentNonBlocking(deviceRef, {
       uid: user.uid,
       name: deviceName,
@@ -119,18 +122,49 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
       isHost: room.hostId === user.uid,
     }, { merge: true });
 
+    // Set up a heartbeat interval to update lastSeen
+    const heartbeatInterval = setInterval(() => {
+      updateDocumentNonBlocking(deviceRef, { lastSeen: serverTimestamp() });
+    }, 15000); // every 15 seconds
+
     const handleBeforeUnload = () => {
+      // This is a best-effort attempt, heartbeat is the fallback
       deleteDocumentNonBlocking(deviceRef);
     };
     
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
+      clearInterval(heartbeatInterval);
       window.removeEventListener('beforeunload', handleBeforeUnload);
+      // Best-effort cleanup on component unmount/navigation
       deleteDocumentNonBlocking(deviceRef);
     };
 
   }, [user, firestore, roomId, deviceName, room]);
+  
+  // Host-only effect to clean up stale devices
+  useEffect(() => {
+      if (!isHost || Object.keys(devices).length === 0 || !firestore) return;
+
+      const cleanupInterval = setInterval(() => {
+          const now = Date.now();
+          const staleThreshold = now - 30000; // 30 seconds
+          
+          Object.values(devices).forEach(device => {
+              if (device.isHost) return; // Don't remove the host
+
+              const lastSeenTime = (device.lastSeen as any)?.toMillis();
+              if (lastSeenTime < staleThreshold) {
+                  const deviceRef = doc(firestore, `rooms/${roomId}/devices/${device.uid}`);
+                  // Use a direct, blocking delete here as it's a background task
+                  deleteDoc(deviceRef).catch(err => console.error("Failed to cleanup device:", err));
+              }
+          });
+      }, 20000); // Check every 20 seconds
+
+      return () => clearInterval(cleanupInterval);
+  }, [isHost, devices, firestore, roomId]);
 
 
   useEffect(() => {
@@ -138,20 +172,28 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     const devicesColRef = collection(firestore, `rooms/${roomId}/devices`);
     const unsubscribe = onSnapshot(devicesColRef, (snapshot) => {
       const newDevices: Record<string, Device> = {};
+      let userIsStillInRoom = false;
       snapshot.forEach((doc) => {
+        if(doc.id === user?.uid) userIsStillInRoom = true;
         newDevices[doc.id] = doc.data() as Device;
       });
       setDevices(newDevices);
+      // If the current user was removed (e.g., kicked by host), redirect them.
+      if (user && !userIsStillInRoom && !isRoomLoading && !isUserLoading) {
+         if (Object.keys(devices).length > 0) { // Check if devices has been populated
+            toast({ title: "You have been removed from the room." });
+            router.push('/');
+         }
+      }
     });
     return () => unsubscribe();
-  }, [firestore, roomId]);
+  }, [firestore, roomId, user, isUserLoading, isRoomLoading, router, toast]);
 
 
   useEffect(() => {
     if (!room?.playback || !audioReady || seekingRef.current) return;
     
     if (isHost) {
-      // Host's player is the source of truth, but we still need to update local state for UI
       if (localPlaybackState !== room.playback.state) {
         setLocalPlaybackState(room.playback.state);
       }
@@ -185,14 +227,12 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     }
   }, [room?.playback, audioReady, isHost]);
 
-  // Effect to update local position for the host to render slider correctly
   useEffect(() => {
     if (isHost && localPlaybackState === 'playing') {
       const interval = setInterval(() => {
         const currentTime = youtubePlayerRef.current?.getCurrentTime();
         if (typeof currentTime === 'number') {
             localPositionRef.current = currentTime;
-            // Force a re-render by updating some state, if slider doesn't move
         }
       }, 500);
       return () => clearInterval(interval);
@@ -258,10 +298,27 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     }
   };
 
+  const handleGlobalVolumeChange = (newVolume: number[]) => {
+    if (!isHost || !firestore) return;
+    const vol = newVolume[0];
+    setLocalVolume(vol); // Host updates their local volume too
+    const roomDocRef = doc(firestore, 'rooms', roomId);
+    updateDocumentNonBlocking(roomDocRef, { "volume": vol });
+  };
+  
+  const handleRemoveDevice = (uid: string) => {
+      if (!isHost || !firestore) return;
+      if (uid === user?.uid) {
+          toast({ variant: 'destructive', title: "You can't remove yourself." });
+          return;
+      }
+      const deviceRef = doc(firestore, `rooms/${roomId}/devices/${uid}`);
+      deleteDocumentNonBlocking(deviceRef);
+  };
+
   const initializeAudio = () => {
     const player = youtubePlayerRef.current;
     if (player && typeof player.playVideo === 'function') {
-      // This user interaction "unlocks" playback on mobile devices
       player.playVideo();
       player.pauseVideo();
     }
@@ -274,10 +331,11 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     if (videoId) {
         setIsYoutubeLoading(true);
         try {
-          const oembedUrl = `https://www.youtube.com/oembed?url=http://www.youtube.com/watch?v=${videoId}&format=json`;
+          const oembedUrl = `https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`;
           const response = await fetch(oembedUrl);
           if (!response.ok) {
-            throw new Error('Failed to fetch video details');
+            const errorData = await response.json().catch(() => ({ error: 'Failed to fetch video details' }));
+            throw new Error(errorData.error || 'Failed to fetch video details');
           }
           const data = await response.json();
           const title = data.title;
@@ -306,11 +364,11 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
           
           await batch.commit();
 
-        } catch(e) {
+        } catch(e: any) {
             toast({
                 variant: 'destructive',
                 title: 'Could not load video',
-                description: 'The video might be private, deleted, or unavailable.',
+                description: e.message || 'The video might be private, deleted, or unavailable.',
             });
         } finally {
             setIsYoutubeLoading(false);
@@ -340,6 +398,8 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     date.setSeconds(seconds);
     return date.toISOString().substr(14, 5);
   }
+
+  const roomVolume = room.volume ?? 0.5;
 
   return (
     <>
@@ -371,13 +431,16 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
             <div className="absolute top-0 left-0 w-px h-px opacity-0 overflow-hidden">
                 <YouTube
                 videoId={room.playback.youtubeVideoId}
-                onReady={(e) => { youtubePlayerRef.current = e.target; e.target.setVolume(volume * 100); }}
+                onReady={(e) => { 
+                  youtubePlayerRef.current = e.target;
+                  const volumeToSet = isHost ? localVolume : room.volume ?? 0.5;
+                  e.target.setVolume(volumeToSet * 100); 
+                }}
                 onStateChange={(e) => {
                   if(isHost) {
-                    // Update local state for host based on player events
                     const playerState = e.target.getPlayerState();
-                    if(playerState === 1) setLocalPlaybackState('playing');
-                    if(playerState === 2 || playerState === 0) setLocalPlaybackState('paused');
+                    if(playerState === 1 && localPlaybackState !== 'playing') setLocalPlaybackState('playing');
+                    if((playerState === 2 || playerState === 0) && localPlaybackState !== 'paused') setLocalPlaybackState('paused');
                   }
                 }}
                 opts={{ playerVars: { controls: 0, modestbranding: 1, showinfo: 0, rel: 0, iv_load_policy: 3 } }}
@@ -422,8 +485,8 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
                             min={0}
                             max={1}
                             step={0.05}
-                            value={[volume]}
-                            onValueChange={(v) => setVolume(v[0])}
+                            value={[isHost ? localVolume : roomVolume]}
+                            onValueChange={(v) => isHost ? handleGlobalVolumeChange(v) : setLocalVolume(v[0])}
                             className="cursor-pointer"
                         />
                     </div>
@@ -450,14 +513,26 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
             
             <div className="flex-1 p-4 bg-white/5 backdrop-blur-md border border-white/10 rounded-xl shadow-lg flex flex-col min-h-0">
                 <h3 className="font-semibold flex items-center gap-2 mb-3 text-primary"><Users /> Connected Devices</h3>
-                <div className="flex-1 overflow-y-auto pr-2">
+                <div className="flex-1 overflow-y-auto pr-2 space-y-1">
                     {devices && Object.values(devices).map((device: Device) => (
-                        <div key={device.uid} className="flex items-center justify-between p-2 rounded-md hover:bg-white/10 transition-colors">
+                        <div key={device.uid} className="flex items-center justify-between p-2 rounded-md hover:bg-white/10 transition-colors group">
                             <span className='flex items-center gap-2 text-foreground/90'>
                                 {device.name}
                                 {device.isHost && <Crown className="h-4 w-4 text-accent" />}
                             </span>
-                            <div className="h-2 w-2 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]"></div>
+                            <div className="flex items-center gap-2">
+                                <div className="h-2 w-2 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]"></div>
+                                {isHost && !device.isHost && (
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-6 w-6 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                                        onClick={() => handleRemoveDevice(device.uid)}
+                                    >
+                                        <X className="h-4 w-4 text-red-500" />
+                                    </Button>
+                                )}
+                            </div>
                         </div>
                     ))}
                 </div>
@@ -467,4 +542,6 @@ export default function RoomPage({ roomId }: { roomId: string; }) {
     </>
   );
 }
+    
+
     

@@ -40,4 +40,7 @@ export interface Room {
   createdAt: Timestamp;
   playback: PlaybackState;
   devices: Record<string, Device>;
+  volume?: number;
 }
+
+    

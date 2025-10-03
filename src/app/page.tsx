@@ -52,6 +52,7 @@ export default function Home() {
       await setDoc(roomRef, {
         hostId: user.uid,
         createdAt: serverTimestamp(),
+        volume: 0.5,
         playback: {
           state: 'paused',
           source: 'youtube',
@@ -192,3 +193,5 @@ export default function Home() {
     </main>
   );
 }
+
+    
