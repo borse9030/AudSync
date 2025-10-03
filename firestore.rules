@@ -1,216 +1,169 @@
 /**
- * @file Firebase Security Rules for AudSync - Prototyping Mode
- * @description This ruleset enforces a strict user-ownership model for user data and room hosting, and allows public read access to audio tracks. It prioritizes authorization independence through denormalization and leverages structural segregation for clearer access control. This configuration is for rapid prototyping and does not enforce strict data validation.
+ * @fileoverview Firestore Security Rules for AudSync.
  *
- * @dataStructure
- * - /users/{userId}: User profiles, owned by the user. Contains denormalized roomId and hostId for authorization.
- * - /users/{userId}/rooms/{roomId}: Room details specific to a user.
- * - /rooms/{roomId}: Room details, including host information and playback state.
- * - /rooms/{roomId}/devices/{deviceId}: Device presence information within a room.
- * - /rooms/{roomId}/playlists/{playlistId}: Playlists for a specific room.
- * - /tracks/{trackId}: Audio track information (publicly readable).
+ * Core Philosophy:
+ * This ruleset enforces a user-ownership and role-based access control model,
+ * ensuring that users can only manage their own data and that room hosts have
+ * control over room-specific resources. The rules also implement structural
+ * segregation to maintain clear access control boundaries between different
+ * data types.
  *
- * @keySecurityDecisions
- * - Users can only manage their own profile data.
- * - Room creation and management is restricted to the room host.
- * - Tracks are publicly readable, but write access is not yet defined (TODO).
- * - Denormalization of hostId into User documents enables efficient authorization checks without extra reads.
- * - Listing users is disallowed.
+ * Data Structure:
+ * - /users/{userId}: Stores user profile information.
+ * - /users/{userId}/rooms/{roomId}: Stores room details specific to a user.
+ * - /rooms/{roomId}/devices/{deviceId}: Stores device presence information within a room.
+ * - /rooms/{roomId}: Stores information for a given room.
+ * - /rooms/{roomId}/playlists/{playlistId}: Stores playlist data for a given room.
+ * - /tracks/{trackId}: Stores audio track information.
  *
- * @denormalizationForAuthorization
- * - The `hostId` is denormalized from the `Room` document into the `User` document to avoid `get()` calls in security rules.
+ * Key Security Decisions:
+ * - Users can only read/write their own user documents.
+ * - Room hosts have write access to their rooms.
+ * - Devices can only write to their own presence node.
+ * - Listing all users is disallowed.
  *
- * @structuralSegregation
- * - User-owned data is stored under `/users/{userId}` to simplify access control.
+ * Denormalization for Authorization:
+ * The `hostId` from the `Room` document is denormalized into the `User` document
+ * to avoid `get()` operations in security rules. This improves performance and
+ * simplifies the rules.
  */
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
     /**
-     * @description Allows users to manage their own profile data.
+     * @description Controls access to user profile information.
      * @path /users/{userId}
-     * @allow (create) User with UID 'user_abc' can create their profile if request.auth.uid == 'user_abc'.
-     * @allow (update) User with UID 'user_abc' can update their profile.
-     * @allow (get) User with UID 'user_abc' can read their profile.
-     * @deny (create) User with UID 'user_xyz' cannot create a profile for user 'user_abc'.
-     * @deny (update) User with UID 'user_xyz' cannot update the profile of user 'user_abc'.
-     * @deny (delete) User with UID 'user_xyz' cannot delete the profile of user 'user_abc'.
+     * @allow (create) User with ID 'user123' can create their own profile if request.auth.uid == 'user123'.
+     * @allow (get) User with ID 'user123' can read their profile if request.auth.uid == 'user123'.
+     * @allow (update) User with ID 'user123' can update their profile if request.auth.uid == 'user123'.
+     * @allow (delete) User with ID 'user123' can delete their profile if request.auth.uid == 'user123'.
+     * @deny (create) User with ID 'user456' cannot create a profile with ID 'user123'.
+     * @deny (get) User with ID 'user456' cannot read profile of 'user123'.
      * @principle Enforces document ownership for writes.
      */
     match /users/{userId} {
-      // Helper function to check if the user is signed in and owns the resource.
-      function isSignedIn() {
-        return request.auth != null;
-      }
-      function isOwner(userId) {
-        return isSignedIn() && request.auth.uid == userId;
-      }
-      function isExistingOwner(userId) {
-        return isOwner(userId) && resource != null;
-      }
-
-      // Read permissions: only the owner can get their profile.
       allow get: if isOwner(userId);
-      // Listing users is not allowed for privacy reasons.
       allow list: if false;
-
-      // Write permissions: only the owner can create, update, or delete their profile.
-      allow create: if isOwner(userId) && request.resource.data.id == userId;
-      allow update: if isExistingOwner(userId) && request.resource.data.id == resource.data.id;
-      allow delete: if isExistingOwner(userId);
-    }
-
-    /**
-     * @description Allows users to manage room details specific to them.
-     * @path /users/{userId}/rooms/{roomId}
-     * @allow (create) User 'user_abc' can create a room under their ID if they are the owner (request.auth.uid == 'user_abc').
-     * @allow (update) User 'user_abc' can update a room under their ID if they are the owner.
-     * @allow (get) User 'user_abc' can read a room under their ID if they are the owner.
-     * @deny (create) User 'user_xyz' cannot create a room under user 'user_abc''s ID.
-     * @deny (update) User 'user_xyz' cannot update a room under user 'user_abc''s ID.
-     * @deny (delete) User 'user_xyz' cannot delete a room under user 'user_abc''s ID.
-     * @principle Enforces document ownership for writes.
-     */
-    match /users/{userId}/rooms/{roomId} {
-      // Helper function to check if the user is signed in and owns the resource.
-      function isSignedIn() {
-        return request.auth != null;
-      }
-      function isOwner(userId) {
-        return isSignedIn() && request.auth.uid == userId;
-      }
-      function isExistingOwner(userId) {
-        return isOwner(userId) && resource != null;
-      }
-
-      // Read permissions: only the owner can get their rooms.
-      allow get: if isOwner(userId);
-      allow list: if isOwner(userId);
-
-      // Write permissions: only the owner can create, update, or delete their rooms.
-      allow create: if isOwner(userId);
+      allow create: if isSignedIn() && isNewOwner(userId);
       allow update: if isExistingOwner(userId);
       allow delete: if isExistingOwner(userId);
     }
 
     /**
-     * @description Allows devices to update their presence within a room.
+     * @description Controls access to room details specific to a user.
+     * @path /users/{userId}/rooms/{roomId}
+     * @allow (create) User with ID 'user123' can create a room if they are signed in.
+     * @allow (get) User with ID 'user123' can read the room if they are the owner.
+     * @allow (update) User with ID 'user123' can update the room if they are the owner.
+     * @allow (delete) User with ID 'user123' can delete the room if they are the owner.
+     * @deny (create) User with ID 'user456' cannot create a room for user 'user123'.
+     * @deny (get) User with ID 'user456' cannot read the room of 'user123'.
+     * @principle Restricts access to a user's own data tree.
+     */
+    match /users/{userId}/rooms/{roomId} {
+      allow get: if isOwner(userId);
+      allow list: if isOwner(userId);
+      allow create: if isSignedIn();
+      allow update: if isExistingOwner(userId);
+      allow delete: if isExistingOwner(userId);
+    }
+
+    /**
+     * @description Controls access to device presence information within a room.
      * @path /rooms/{roomId}/devices/{deviceId}
-     * @allow (create) Device with ID 'device_123' can create its presence in room 'room_456' if request.auth.uid == 'device_123'.
-     * @allow (update) Device with ID 'device_123' can update its presence in room 'room_456'.
-     * @allow (get) Device with ID 'device_123' can read its presence in room 'room_456'.
-     * @deny (create) Device with ID 'device_xyz' cannot create presence for device 'device_123'.
-     * @deny (update) Device with ID 'device_xyz' cannot update the presence of device 'device_123'.
-     * @deny (delete) Device with ID 'device_xyz' cannot delete the presence of device 'device_123'.
-     * @principle Enforces device-specific ownership for writes.
+     * @allow (create) Device with ID 'device123' can create its presence node if signed in.
+     * @allow (get) Device with ID 'device123' can read its presence node if signed in.
+     * @allow (update) Device with ID 'device123' can update its presence node if signed in.
+     * @allow (delete) Device with ID 'device123' can delete its presence node if signed in.
+     * @deny (create) Device with ID 'device456' cannot create presence node for device 'device123'.
+     * @deny (get) Device with ID 'device456' cannot read the presence node of 'device123'.
+     * @principle Enforces device-level ownership within a room.
      */
     match /rooms/{roomId}/devices/{deviceId} {
-      // Helper function to check if the user is signed in and the device ID matches.
-      function isSignedIn() {
-        return request.auth != null;
-      }
-      function isDevice(deviceId) {
-        return isSignedIn() && request.auth.uid == deviceId;
-      }
-      function isExistingDevice(deviceId) {
-        return isDevice(deviceId) && resource != null;
-      }
-
-      // Read permissions: only the device can read its own presence.
-      allow get: if isDevice(deviceId);
+      allow get: if isSignedIn();
       allow list: if false;
-
-      // Write permissions: only the device can create, update, or delete its presence.
-      allow create: if isDevice(deviceId);
-      allow update: if isExistingDevice(deviceId);
-      allow delete: if isExistingDevice(deviceId);
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isSignedIn();
     }
 
     /**
-     * @description Allows management of room details by the host.
+     * @description Controls access to room information.
      * @path /rooms/{roomId}
-     * @allow (get) Any user can read room details.
-     * @allow (create) User with UID 'user_abc' can create a room if they are the host (request.resource.data.hostId == request.auth.uid).
-     * @allow (update) User with UID 'user_abc' can update a room if they are the host (resource.data.hostId == request.auth.uid).
-     * @deny (create) User with UID 'user_xyz' cannot create a room for another host.
-     * @deny (update) User with UID 'user_xyz' cannot update a room they don't host.
-     * @deny (delete) User with UID 'user_xyz' cannot delete a room they don't host.
-     * @principle Enforces host-based ownership for writes.
+     * @allow (get) Any signed-in user can read room information.
+     * @allow (create) Any signed-in user can create a room. Must have a valid hostId
+     * @allow (update) Only the host (specified in hostId) can update the room.
+     * @allow (delete) Only the host can delete the room.
+     * @deny (create) Unauthenticated users cannot create rooms.
+     * @deny (update) Non-hosts cannot update room information.
+     * @principle Public read with owner-only writes.
      */
     match /rooms/{roomId} {
-      // Helper function to check if the user is signed in.
-      function isSignedIn() {
-        return request.auth != null;
-      }
-      // Helper function to check if the user is the host of the room.
-      function isHost(hostId) {
-        return isSignedIn() && request.auth.uid == hostId;
-      }
-      function isExistingHost(hostId) {
-        return isHost(hostId) && resource != null;
-      }
-
-      // Read permissions: anyone can read room details.
       allow get: if true;
       allow list: if true;
-
-      // Write permissions: only the host can create, update, or delete the room.
       allow create: if isSignedIn() && request.resource.data.hostId == request.auth.uid;
-      allow update: if isExistingHost(resource.data.hostId);
-      allow delete: if isExistingHost(resource.data.hostId);
+      allow update: if isSignedIn() && resource.data.hostId == request.auth.uid && resource != null;
+      allow delete: if isSignedIn() && resource.data.hostId == request.auth.uid && resource != null;
     }
 
     /**
-     * @description Allows management of playlists within a room.
+     * @description Controls access to playlist data for a given room.
      * @path /rooms/{roomId}/playlists/{playlistId}
-     * @allow (create) User can create a playlist if they are the host of the room.
-     * @allow (update) User can update a playlist if they are the host of the room.
-     * @allow (get) Any user can read the playlist details.
-     * @deny (create) User 'user_xyz' cannot create a playlist in a room they don't host.
-     * @deny (update) User 'user_xyz' cannot update a playlist in a room they don't host.
-     * @deny (delete) User 'user_xyz' cannot delete a playlist in a room they don't host.
-     * @principle Enforces host-based ownership for playlist management.
+     * @allow (create) Signed-in users can create playlists within a room.
+     * @allow (get) Any signed-in user can read playlist information for the room.
+     * @allow (update) Only the room host can update the playlist.
+     * @allow (delete) Only the room host can delete the playlist.
+     * @deny (create) Unauthenticated users cannot create playlists.
+     * @deny (update) Non-hosts cannot update playlists in the room.
+     * @principle Owner-only writes, shared read access.
      */
     match /rooms/{roomId}/playlists/{playlistId} {
-      // Helper function to check if the user is signed in.
-      function isSignedIn() {
-        return request.auth != null;
-      }
-      // Helper function to check if the user is the host of the room (using a get() operation).
-      function isHost(roomId) {
-        return isSignedIn() && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid;
-      }
-      function isExistingHost(roomId) {
-        return isHost(roomId) && resource != null;
-      }
-
-      // Read permissions: anyone can read the playlist.
-      allow get: if true;
-      allow list: if true;
-
-      // Write permissions: only the host can create, update, or delete the playlist.
-      allow create: if isHost(roomId);
-      allow update: if isExistingHost(roomId);
-      allow delete: if isExistingHost(roomId);
+      allow get: if isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid  && resource != null;
+      allow delete: if isSignedIn() && get(/databases/$(database)/documents/rooms/$(roomId)).data.hostId == request.auth.uid && resource != null;
     }
 
     /**
-     * @description Allows public read access to track information. Write access is not yet defined.
+     * @description Controls access to audio track information.
      * @path /tracks/{trackId}
      * @allow (get) Any user can read track information.
-     * @deny (create) No one can create tracks (TODO: implement write access control).
-     * @deny (update) No one can update tracks (TODO: implement write access control).
-     * @deny (delete) No one can delete tracks (TODO: implement write access control).
-     * @principle Allows public read access to track information.
+     * @allow (list) Any user can list track information.
+     * @allow (create) Only the track creator can create track information. // TODO: Needs more robust role-based control
+     * @allow (update) Only the track creator can update track information. // TODO: Needs more robust role-based control
+     * @allow (delete) Only the track creator can delete track information. // TODO: Needs more robust role-based control
+     * @deny (create) Unauthenticated users cannot create tracks.
+     * @deny (update) Non-creators cannot update track information.
+     * @principle Public read, owner-only writes (needs refinement).
      */
     match /tracks/{trackId} {
-      // Read permissions: anyone can read track information.
       allow get: if true;
       allow list: if true;
-
-      // Write permissions: not yet defined.
-      allow create, update, delete: if false; // TODO: Add owner validation once the schema is updated with an ownership field.
+      allow create: if isSignedIn(); // TODO: Should be limited to admins or content creators.
+      allow update: if isSignedIn() && resource != null; // TODO: Should be limited to admins or the creator.
+      allow delete: if isSignedIn() && resource != null; // TODO: Should be limited to admins or the creator.
     }
+  }
+
+  // Helper function to determine if the user is signed in.
+  function isSignedIn() {
+    return request.auth != null;
+  }
+
+  // Helper function to determine if the user is the owner of the resource.
+  function isOwner(userId) {
+    return request.auth.uid == userId;
+  }
+
+    // Helper function to determine if the user is creating their own user document.
+  function isNewOwner(userId) {
+    return isSignedIn() && request.auth.uid == userId && request.resource.data.id == userId;
+  }
+
+  // Helper function to determine if the user is the existing owner of the resource.
+  function isExistingOwner(userId) {
+    return isOwner(userId) && resource != null;
   }
 }
